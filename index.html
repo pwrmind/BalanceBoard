@@ -56,7 +56,7 @@ window.AppState = {
     
     moveStep(direction) {
         const next = this.currentStep + direction;
-        if (next >= 1 && next <= 5) {
+        if (next >= 1 && next <= 6) {  // теперь 6 экранов
             if (direction === 1 && next < 5 && 
                 JSON.stringify(this.snapshots[next]) === JSON.stringify(DEFAULT_SPHERES)) {
                 this.snapshots[next] = [...this.snapshots[this.currentStep]];
@@ -79,6 +79,33 @@ window.AppState = {
             4: [...DEFAULT_SPHERES]
         };
         window.dispatchEvent(new CustomEvent('state-changed'));
+    },
+
+    // ---------- Методы для истории ----------
+    saveCurrentSession() {
+        const history = this.getHistory();
+        const newSession = {
+            id: Date.now(),
+            date: new Date().toLocaleDateString('ru-RU', { 
+                day: '2-digit', month: '2-digit', year: 'numeric', 
+                hour: '2-digit', minute:'2-digit' 
+            }),
+            snapshots: JSON.parse(JSON.stringify(this.snapshots))
+        };
+        history.unshift(newSession);
+        localStorage.setItem('balance_4d_history', JSON.stringify(history));
+    },
+    
+    getHistory() {
+        const raw = localStorage.getItem('balance_4d_history');
+        return raw ? JSON.parse(raw) : [];
+    },
+    
+    deleteSession(id) {
+        let history = this.getHistory();
+        history = history.filter(s => s.id !== id);
+        localStorage.setItem('balance_4d_history', JSON.stringify(history));
+        window.dispatchEvent(new CustomEvent('state-changed'));
     }
 };
 
@@ -95,10 +122,7 @@ class BalanceList extends HTMLElement {
         this.selectedIndex = null;
     }
 
-    connectedCallback() {
-        this.render();
-    }
-
+    connectedCallback() { this.render(); }
     static get observedAttributes() { return ['step']; }
     attributeChangedCallback() { this.render(); }
 
@@ -109,103 +133,46 @@ class BalanceList extends HTMLElement {
         this.shadowRoot.innerHTML = `
             <style>
                 :host { display: block; width: 100%; box-sizing: border-box; }
-                
-                .container { 
-                    display: grid; 
-                    grid-template-columns: auto 1fr; 
-                    gap: 16px; 
-                    margin: 20px 0; 
-                    position: relative;
-                }
-                
-                .scale { 
-                    display: flex; 
-                    flex-direction: column; 
-                    gap: 12px; 
-                    padding: 6px 0;
-                }
+                .container { display: grid; grid-template-columns: auto 1fr; gap: 16px; margin: 20px 0; position: relative; }
+                .scale { display: flex; flex-direction: column; gap: 12px; padding: 6px 0; }
                 .static-badge {
-                    background: #f8fafc;
-                    padding: 14px 10px;
-                    border-radius: 10px;
-                    font-size: 13px;
-                    font-weight: 700;
-                    color: #64748b;
-                    border: 1px dashed #cbd5e1;
-                    min-width: 80px;
-                    box-sizing: border-box;
-                    text-align: center;
-                    height: 52px;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
+                    background: #f8fafc; padding: 14px 10px; border-radius: 10px;
+                    font-size: 13px; font-weight: 700; color: #64748b;
+                    border: 1px dashed #cbd5e1; min-width: 80px; box-sizing: border-box;
+                    text-align: center; height: 52px; display: flex; align-items: center; justify-content: center;
                 }
-                
-                .list { 
-                    display: flex; 
-                    flex-direction: column; 
-                    gap: 12px; 
-                    padding: 6px 0;
-                    position: relative;
-                }
-                
-                .item-wrapper {
-                    position: relative;
-                    height: 52px;
-                }
-                
+                .list { display: flex; flex-direction: column; gap: 12px; padding: 6px 0; position: relative; }
+                .item-wrapper { position: relative; height: 52px; }
                 .item { 
-                    padding: 14px 16px; 
-                    background: #ffffff; 
-                    border: 1px solid #e2e8f0; 
-                    border-radius: 10px; 
-                    cursor: grab; 
-                    user-select: none;
+                    padding: 14px 16px; background: #ffffff; border: 1px solid #e2e8f0; 
+                    border-radius: 10px; cursor: grab; user-select: none;
                     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
-                    display: flex; 
-                    align-items: center; 
-                    justify-content: space-between; 
-                    color: #1e293b;
-                    height: 100%;
-                    box-sizing: border-box;
-                    touch-action: none;
+                    display: flex; align-items: center; justify-content: space-between; 
+                    color: #1e293b; height: 100%; box-sizing: border-box; touch-action: none;
                 }
-                
                 .item:active { cursor: grabbing; }
                 .item.dragging { opacity: 0.3; background: #f1f5f9; box-shadow: none; }
                 .item.selected { border-color: #3b82f6; background: #eff6ff; box-shadow: 0 0 0 2px #3b82f6; }
-                
                 .name { font-size: 15px; font-weight: 500; }
-                
                 .drag-handle { display: flex; flex-direction: column; gap: 3px; cursor: grab; }
                 .drag-handle span { width: 4px; height: 4px; background-color: #94a3b8; border-radius: 50%; }
-                
                 .drop-indicator {
-                    position: absolute;
-                    left: 0;
-                    right: 0;
-                    height: 4px;
-                    background-color: #3b82f6;
-                    border-radius: 2px;
-                    display: none;
-                    pointer-events: none;
-                    z-index: 10;
+                    position: absolute; left: 0; right: 0; height: 4px;
+                    background-color: #3b82f6; border-radius: 2px; display: none;
+                    pointer-events: none; z-index: 10;
                 }
                 .item-wrapper.drag-before .drop-indicator.top { display: block; top: -8px; }
                 .item-wrapper.drag-after .drop-indicator.bottom { display: block; bottom: -8px; }
-
                 @media (max-width: 480px) {
                     .static-badge { min-width: 65px; font-size: 11px; padding: 10px 4px;}
                     .name { font-size: 13px; }
                     .container { gap: 8px; }
                 }
             </style>
-            
             <div class="container">
                 <div class="scale">
                     ${items.map((_, idx) => `<div class="static-badge">Баллов: ${10 - idx}</div>`).join('')}
                 </div>
-                
                 <div class="list">
                     ${items.map((name, idx) => `
                         <div class="item-wrapper" data-index="${idx}">
@@ -224,7 +191,6 @@ class BalanceList extends HTMLElement {
                 </div>
             </div>
         `;
-
         this.setupDesktopDragAndDrop();
         this.setupMobileTouchAndClick();
     }
@@ -232,27 +198,22 @@ class BalanceList extends HTMLElement {
     setupDesktopDragAndDrop() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
         let dropPosition = null;
-
         wrappers.forEach(wrapper => {
             const item = wrapper.querySelector('.item');
-
             item.addEventListener('dragstart', (e) => {
                 this.draggedIndex = parseInt(wrapper.dataset.index);
                 item.classList.add('dragging');
                 e.dataTransfer.effectAllowed = 'move';
             });
-
             item.addEventListener('dragend', () => {
                 item.classList.remove('dragging');
                 this.clearIndicators();
             });
-
             wrapper.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 const bounding = wrapper.getBoundingClientRect();
                 const offset = e.clientY - bounding.top;
                 this.clearIndicators();
-
                 if (offset < bounding.height / 2) {
                     wrapper.classList.add('drag-before');
                     dropPosition = 'before';
@@ -261,9 +222,7 @@ class BalanceList extends HTMLElement {
                     dropPosition = 'after';
                 }
             });
-
             wrapper.addEventListener('dragleave', () => this.clearIndicators());
-
             wrapper.addEventListener('drop', (e) => {
                 e.preventDefault();
                 this.executeReorder(parseInt(wrapper.dataset.index), dropPosition);
@@ -275,14 +234,10 @@ class BalanceList extends HTMLElement {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
         let dropPosition = null;
         let lastTargetWrapper = null;
-
         wrappers.forEach(wrapper => {
             const item = wrapper.querySelector('.item');
-
-            // Клик-навигация
             item.addEventListener('click', () => {
                 const index = parseInt(wrapper.dataset.index);
-                
                 if (this.selectedIndex === null) {
                     this.selectedIndex = index;
                     item.classList.add('selected');
@@ -295,8 +250,6 @@ class BalanceList extends HTMLElement {
                     this.shadowRoot.querySelectorAll('.item').forEach(i => i.classList.remove('selected'));
                 }
             });
-
-            // Touch API
             item.addEventListener('touchstart', (e) => {
                 this.draggedIndex = parseInt(wrapper.dataset.index);
                 this.touchDraggedItem = item;
@@ -304,14 +257,11 @@ class BalanceList extends HTMLElement {
                 item.style.position = 'relative';
                 item.style.zIndex = '100';
             });
-
             item.addEventListener('touchmove', (e) => {
                 if (!this.touchDraggedItem) return;
                 const currentY = e.touches[0].clientY;
                 const deltaY = currentY - this.touchStartY;
-                
                 this.touchDraggedItem.style.transform = `translateY(${deltaY}px)`;
-
                 this.clearIndicators();
                 const targetEl = this.shadowRoot.elementFromPoint(e.touches[0].clientX, currentY);
                 const currentWrapper = targetEl ? targetEl.closest('.item-wrapper') : null;
@@ -328,7 +278,6 @@ class BalanceList extends HTMLElement {
                     }
                 }
             });
-
             item.addEventListener('touchend', () => {
                 if (!this.touchDraggedItem) return;
                 this.touchDraggedItem.style.transform = '';
@@ -350,17 +299,14 @@ class BalanceList extends HTMLElement {
         const step = parseInt(this.getAttribute('step'));
         const listData = [...window.AppState.snapshots[step]];
         const [draggedItem] = listData.splice(this.draggedIndex, 1);
-        
         let newIndex = targetIndex;
         if (position === 'after' && this.draggedIndex > targetIndex) {
             newIndex = targetIndex + 1;
         } else if (position === 'before' && this.draggedIndex < targetIndex) {
             newIndex = targetIndex - 1;
         }
-        
         if (newIndex < 0) newIndex = 0;
         if (newIndex > listData.length) newIndex = listData.length;
-
         listData.splice(newIndex, 0, draggedItem);
         window.AppState.updateSnapshot(step, listData);
         this.render();
@@ -376,7 +322,7 @@ class BalanceList extends HTMLElement {
 customElements.define('balance-list', BalanceList);
 
 // ----------------------------------------------
-// Компонент: интерактивная аналитика с КПТ-вопросами
+// Компонент: аналитика с КПТ-вопросами (экран 5)
 // ----------------------------------------------
 class BalanceDashboard extends HTMLElement {
     constructor() {
@@ -387,46 +333,44 @@ class BalanceDashboard extends HTMLElement {
                 insight: "Психика использует эту сферу как «кредитную карту» — вы берете из общего бака энергию в долг под огромный процент, чтобы заглушить базовую тревогу или соответствовать чужим ожиданиям.",
                 questions: {
                     "Карьера и бизнес": [
-                        "Чьи именно ожидания (родителей, социума, бывших коллег) вы обслуживаете, заставляя себя удерживать здесь фокус?",
-                        "Какого страшного сценария вы избегаете, уходя с головой в работу? От чего вы прячетесь в бесконечной операционке?",
-                        "Если вы снизите планку перфекционизма в работе на 20%, что самое худшее произойдет на самом деле?"
+                        "Чьи именно ожидания (родителей, социума, бывших коллег) вы обслуживаете?",
+                        "От чего вы прячетесь в бесконечной операционке?",
+                        "Если вы снизите планку перфекционизма в работе на 20%, что самое худшее произойдет?"
                     ],
                     "Финансы": [
-                        "Какую психологическую потребность вы пытаетесь закрыть деньгами (безопасность, признание, любовь, автономия)? Насколько успешно они с этим справляются?",
-                        "Вы чувствуете себя «несуществующим» или неценным, когда не приносите деньги? Откуда взялось это жесткое убеждение?",
-                        "Если временно убрать доход из уравнения, какие другие ваши сильные стороны и человеческие качества остаются неизменными?"
+                        "Какую психологическую потребность вы пытаетесь закрыть деньгами?",
+                        "Откуда взялось убеждение «я ценен, пока приношу деньги»?",
+                        "Какие ваши качества остаются неизменными без привязки к доходу?"
                     ],
                     "default": [
-                        "Что заставляет вас искусственно удерживать высокую важность этой сферы, несмотря на внутреннее сопротивление?",
-                        "Какую цену (здоровьем, отношениями, временем) вы платите за то, чтобы эта сфера выглядела «нормально»?",
-                        "Как выглядит минимальный шаг по ослаблению контроля в этом направлении?"
+                        "Что заставляет вас искусственно удерживать высокую важность?",
+                        "Какую цену вы платите за поддержание этой сферы «нормальной»?",
+                        "Как выглядит минимальный шаг по ослаблению контроля?"
                     ]
                 }
             },
             sabotage: {
-                insight: "Здесь живет внутренний конфликт: вы искренне считаете сферу важной, но мозг блокирует действия (саботирует), потому что боится неудачи, выгорания или новой ответственности. Энергия сливается на мысленную жвачку «надо бы сделать».",
+                insight: "Здесь живет внутренний конфликт: вы искренне считаете сферу важной, но мозг блокирует действия, боясь неудачи или новой ответственности. Энергия уходит на мысленную жвачку.",
                 questions: {
                     "Личностный рост": [
-                        "Не превратилось ли обучение в легальный способ отложить реальные действия? Вы учитесь, чтобы начать, или чтобы не начинать?",
-                        "Какого конкретно практического шага (публикация, предложение услуг, заявление о себе) вы избегаете за щитом новых дипломов?"
+                        "Не превратилось ли обучение в легальный способ отложить реальные действия?",
+                        "Какого практического шага вы избегаете за щитом новых дипломов?"
                     ],
                     "Карьера и бизнес": [
-                        "Если речь идет о старте новой практики (например, психолога): какой самый большой страх мешает сделать первое публичное заявление?",
-                        "Опишите вашего «внутреннего критика» в этой сфере. Какими словами он убеждает вас отложить первые шаги?"
+                        "Какой страх мешает сделать первое публичное заявление о вашей практике?",
+                        "Какими словами ваш внутренний критик убеждает вас отложить старт?"
                     ],
                     "default": [
-                        "Какая автоматическая мысль возникает в голове за секунду до того, как вы собираетесь сделать шаг в этой сфере?",
-                        "Какое минимальное неидеальное действие (на 5 минут) вы можете сделать прямо сегодня, чтобы обмануть страх?",
-                        "Как изменится ваша жизнь через 3 месяца, если вы продолжите просто думать об этой сфере, но ничего не предпринимать?"
+                        "Какая автоматическая мысль возникает перед действием?",
+                        "Какое неидеальное действие на 5 минут вы можете сделать прямо сегодня?",
+                        "Что будет через 3 месяца, если вы продолжите только думать об этой сфере?"
                     ]
                 }
             }
         };
     }
 
-    connectedCallback() {
-        this.calculateMetrics();
-    }
+    connectedCallback() { this.calculateMetrics(); }
 
     calculateMetrics() {
         const sn = window.AppState.snapshots;
@@ -435,126 +379,187 @@ class BalanceDashboard extends HTMLElement {
             const pWant = 10 - sn[2].indexOf(name);
             const tNow = 10 - sn[3].indexOf(name);
             const tWant = 10 - sn[4].indexOf(name);
-
             const dP = pNow - pWant;
             const dT = tNow - tWant;
-            const ird = dP * dT;
-
-            return { name, pNow, pWant, tNow, tWant, dP, dT, ird };
+            return { name, pNow, pWant, tNow, tWant, dP, dT, ird: dP * dT };
         });
-
         const violenceZone = metrics.filter(m => (m.dT > 0) && (m.dP > 0));
         const sabotageZone = metrics.filter(m => (m.ird < 0) || (m.dT < 0 && m.dP > 0));
         const healthyZone = metrics.filter(m => !violenceZone.includes(m) && !sabotageZone.includes(m));
-
         this.render(violenceZone, sabotageZone, healthyZone);
     }
 
     getQuestions(zoneType, sphereName) {
         const db = this.psychologyDatabase[zoneType];
-        if (!db) return [];
-        return db.questions[sphereName] || db.questions["default"];
+        return db ? (db.questions[sphereName] || db.questions["default"]) : [];
     }
 
     render(violence, sabotage, healthy) {
         this.shadowRoot.innerHTML = `
             <style>
-                :host { display: block; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-                h2 { color: #0f172a; font-size: 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 8px; }
-                
+                :host { display: block; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+                h2 { color: #0f172a; margin-bottom: 24px; }
                 .zone-section { padding: 20px; border-radius: 14px; margin-bottom: 24px; border: 1px solid #e2e8f0; background: #ffffff; }
-                .zone-section.violence { border-left: 6px solid #ef4444; }
-                .zone-section.sabotage { border-left: 6px solid #f59e0b; }
-                .zone-section.healthy { border-left: 6px solid #10b981; background: #f8fafc; }
-                
-                .zone-title { font-size: 16px; font-weight: 700; margin: 0 0 6px 0; display: flex; align-items: center; gap: 8px; }
-                .zone-title.v-text { color: #b91c1c; }
-                .zone-title.s-text { color: #b45309; }
-                .zone-title.h-text { color: #047857; }
-                
-                .zone-desc { font-size: 14px; color: #475569; margin: 0 0 16px 0; line-height: 1.5; }
-                
+                .violence { border-left: 6px solid #ef4444; }
+                .sabotage { border-left: 6px solid #f59e0b; }
+                .healthy { border-left: 6px solid #10b981; background: #f8fafc; }
+                .zone-title { font-size: 16px; font-weight: 700; margin: 0 0 6px 0; }
+                .v-text { color: #b91c1c; } .s-text { color: #b45309; } .h-text { color: #047857; }
+                .zone-desc { font-size: 14px; color: #475569; margin-bottom: 16px; }
                 .badge-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
                 .sphere-badge { background: #f1f5f9; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: #334155; border: 1px solid #cbd5e1; }
                 .violence .sphere-badge { background: #fef2f2; color: #991b1b; border-color: #fca5a5; }
                 .sabotage .sphere-badge { background: #fffbeb; color: #92400e; border-color: #fcd34d; }
-                
                 .cpt-container { background: #f8fafc; border-radius: 10px; padding: 16px; margin-top: 14px; border: 1px solid #e2e8f0; }
-                .cpt-insight { font-size: 13px; font-style: italic; color: #334155; margin-bottom: 12px; line-height: 1.5; border-left: 3px solid #64748b; padding-left: 10px; }
-                .cpt-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-                
+                .cpt-insight { font-size: 13px; font-style: italic; color: #334155; margin-bottom: 12px; border-left: 3px solid #64748b; padding-left: 10px; }
+                .cpt-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 8px; text-transform: uppercase; }
                 .questions-list { margin: 0; padding-left: 20px; }
-                .questions-list li { font-size: 14px; color: #1e293b; margin-bottom: 10px; line-height: 1.5; font-weight: 500; }
-                
-                .mvp-box { background: #eff6ff; border: 1px dashed #bfdbfe; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 13px; color: #1e40af; line-height: 1.4; }
-                
-                .global-tip { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 16px; border-radius: 12px; font-size: 14px; color: #166534; line-height: 1.5; margin-top: 30px; }
+                .questions-list li { font-size: 14px; color: #1e293b; margin-bottom: 10px; }
+                .mvp-box { background: #eff6ff; border: 1px dashed #bfdbfe; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 13px; color: #1e40af; }
+                .global-tip { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 16px; border-radius: 12px; font-size: 14px; color: #166534; margin-top: 30px; }
             </style>
-
-            <h2>🎯 Результаты 4D-диагностики системы</h2>
-            
+            <h2>🎯 Результаты 4D-диагностики</h2>
             <div class="zone-section violence">
                 <div class="zone-title v-text">🔴 Зона насилия (Скрытые грыжи)</div>
-                <div class="zone-desc">Вы тратите сюда слишком много фактического времени и искусственно завышаете важность в ущерб истинным желаниям. Сферы выжигают общий ресурс:</div>
-                
-                <div class="badge-container">
-                    ${violence.length ? violence.map(m => `<div class="sphere-badge">${m.name} (ИРД: +${m.ird})</div>`).join('') : '<i>Скрытых грыж не обнаружено. Отличный маркер безопасности.</i>'}
-                </div>
-
+                <div class="zone-desc">Вы тратите сюда слишком много времени и искусственно завышаете важность:</div>
+                <div class="badge-container">${violence.length ? violence.map(m => `<div class="sphere-badge">${m.name} (ИРД: +${m.ird})</div>`).join('') : '<i>Чисто.</i>'}</div>
                 ${violence.map(m => `
                     <div class="cpt-container">
                         <div class="cpt-title">Разбор деформации: ${m.name}</div>
                         <div class="cpt-insight">${this.psychologyDatabase.violence.insight}</div>
-                        <ul class="questions-list">
-                            ${this.getQuestions('violence', m.name).map(q => `<li>${q}</li>`).join('')}
-                        </ul>
-                        <div class="mvp-box">
-                            🏃‍♂️ <b>КПТ-эксперимент (MVP):</b> На этой неделе сознательно снизьте время на контроль этой сферы на 10%. Зафиксируйте в блокноте: подтвердились ли катастрофические мысли ума?
-                        </div>
+                        <ul class="questions-list">${this.getQuestions('violence', m.name).map(q => `<li>${q}</li>`).join('')}</ul>
+                        <div class="mvp-box">🏃‍♂️ <b>КПТ-эксперимент:</b> На этой неделе сознательно снизьте время на контроль на 10%. Зафиксируйте результат.</div>
                     </div>
                 `).join('')}
             </div>
-
             <div class="zone-section sabotage">
                 <div class="zone-title s-text">🟡 Зона напряжения и саботажа</div>
-                <div class="zone-desc">Внутренний конфликт. Высокие ментальные требования при жестком дефиците реальных действий. Ресурс сливается на фоновую тревогу и самобичевание вместо шагов:</div>
-                
-                <div class="badge-container">
-                    ${sabotage.length ? sabotage.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : 'Зон саботажа не обнаружено. Ваши действия синхронны планам.'}
-                </div>
-
+                <div class="zone-desc">Высокие требования при дефиците действий. Ресурс уходит на тревогу:</div>
+                <div class="badge-container">${sabotage.length ? sabotage.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : '<i>Разрывов нет.</i>'}</div>
                 ${sabotage.map(m => `
                     <div class="cpt-container">
                         <div class="cpt-title">Разбор паралича: ${m.name}</div>
                         <div class="cpt-insight">${this.psychologyDatabase.sabotage.insight}</div>
-                        <ul class="questions-list">
-                            ${this.getQuestions('sabotage', m.name).map(q => `<li>${q}</li>`).join('')}
-                        </ul>
-                        <div class="mvp-box">
-                            🛠 <b>КПТ-эксперимент (MVP):</b> Обманите страх уязвимости. Сделайте сверхмалое действие в этой сфере прямо сегодня. Не «начните практику», а просто «напишите один абзац текста-знакомства в черновик». Сделайте его умышленно неидеальным.
-                        </div>
+                        <ul class="questions-list">${this.getQuestions('sabotage', m.name).map(q => `<li>${q}</li>`).join('')}</ul>
+                        <div class="mvp-box">🛠 <b>КПТ-эксперимент:</b> Сделайте сверхмалое неидеальное действие сегодня (например, один абзац текста).</div>
                     </div>
                 `).join('')}
             </div>
-
             <div class="zone-section healthy">
                 <div class="zone-title h-text">🟢 Системное здоровье</div>
-                <div class="zone-desc">Действия и ценности синхронизированы. Ресурс распределяется адекватно вашему внутреннему запросу:</div>
-                <div class="badge-container">
-                    ${healthy.length ? healthy.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : 'Сфер в полном балансе пока не зафиксировано.'}
-                </div>
+                <div class="zone-desc">Действия и ценности синхронизированы:</div>
+                <div class="badge-container">${healthy.length ? healthy.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : '<i>Пока ни одной полностью здоровой сферы.</i>'}</div>
             </div>
-
-            <div class="global-tip">
-                💡 <b>Главный терапевтический вывод:</b> Лобовая попытка «спасать» сферы из Зоны Саботажа (например, заставлять себя запускать практику, когда вы истощены) не сработает. Сначала нужно перекрыть течь — легально снизить планку и важность в Зоне Насилия. Как только вы вернете мыслетопливо из грыж, у мозга физически появится биологическая энергия на старт шагов в саботируемых зонах.
-            </div>
+            <div class="global-tip">💡 <b>Главный терапевтический вывод:</b> Сначала снимите давление в зоне насилия — тогда появится энергия на шаги в саботируемых сферах.</div>
         `;
     }
 }
 customElements.define('balance-dashboard', BalanceDashboard);
 
 // ----------------------------------------------
-// Корневой компонент SPA (навигация)
+// Компонент: история (экран 6)
+// ----------------------------------------------
+class BalanceHistory extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({ mode: 'open' });
+        this.selectedCompareId = null;
+    }
+
+    connectedCallback() { this.render(); }
+
+    getMetricsFromSnapshot(snapshots) {
+        return DEFAULT_SPHERES.map(name => {
+            const pNow = 10 - snapshots[1].indexOf(name);
+            const pWant = 10 - snapshots[2].indexOf(name);
+            const tNow = 10 - snapshots[3].indexOf(name);
+            const tWant = 10 - snapshots[4].indexOf(name);
+            return { name, pNow, pWant, tNow, tWant, ird: (pNow - pWant) * (tNow - tWant) };
+        });
+    }
+
+    render() {
+        const history = window.AppState.getHistory();
+        if (history.length === 0) {
+            this.shadowRoot.innerHTML = `<style>.empty { text-align:center; color:#64748b; padding:40px; }</style><div class="empty">🗄 История пуста. Пройдите тестирование.</div>`;
+            return;
+        }
+        if (!this.selectedCompareId && history.length > 0) {
+            this.selectedCompareId = history[0].id;
+        }
+        const currentMetrics = this.getMetricsFromSnapshot(window.AppState.snapshots);
+        const pastSession = history.find(s => s.id === this.selectedCompareId) || history[0];
+        const pastMetrics = this.getMetricsFromSnapshot(pastSession.snapshots);
+
+        this.shadowRoot.innerHTML = `
+            <style>
+                :host { display: block; font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: #1e293b; }
+                h2 { font-size: 20px; margin-bottom: 16px; }
+                .selector-box { background: #f8fafc; padding: 12px; border-radius: 10px; border: 1px solid #e2e8f0; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 24px; }
+                select { padding: 8px 12px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 14px; }
+                .diff-table { width: 100%; border-collapse: collapse; margin-bottom: 24px; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden; }
+                th { background: #f1f5f9; padding: 12px; font-size: 13px; text-align: left; color: #475569; }
+                td { padding: 14px 12px; font-size: 14px; border-bottom: 1px solid #f1f5f9; }
+                .trend { font-weight: 700; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+                .trend.up { background: #f0fdf4; color: #166534; }
+                .trend.down { background: #fef2f2; color: #991b1b; }
+                .trend.stable { background: #f1f5f9; color: #475569; }
+                .history-cpt { background: #eff6ff; border: 1px solid #bfdbfe; padding: 18px; border-radius: 12px; margin-top: 20px; }
+                .btn-delete { background: none; border: none; color: #ef4444; font-size: 13px; cursor: pointer; text-decoration: underline; }
+            </style>
+            <h2>📊 Сравнение истории (Было → Стало)</h2>
+            <div class="selector-box">
+                <div>
+                    <label>Сравнить с точкой во времени:</label>
+                    <select id="session-select">
+                        ${history.map(s => `<option value="${s.id}" ${s.id === this.selectedCompareId ? 'selected' : ''}>Диагностика от ${s.date}</option>`).join('')}
+                    </select>
+                </div>
+                <button class="btn-delete" id="btn-delete-session">Удалить запись</button>
+            </div>
+            <table class="diff-table">
+                <thead><tr><th>Сфера</th><th>Было (ИРД)</th><th>Стало (ИРД)</th><th>Динамика</th></tr></thead>
+                <tbody>
+                    ${currentMetrics.map(curr => {
+                        const past = pastMetrics.find(p => p.name === curr.name) || { ird: 0 };
+                        const diff = curr.ird - past.ird;
+                        let trendClass = 'stable', trendText = 'Без изменений';
+                        if (diff > 0) { trendClass = 'down'; trendText = `+${diff} 🔺 Давление растет`; }
+                        if (diff < 0) { trendClass = 'up'; trendText = `${diff} 🔻 Разгрузка`; }
+                        return `<tr><td>${curr.name}</td><td>${past.ird >= 0 ? '+' : ''}${past.ird}</td><td>${curr.ird >= 0 ? '+' : ''}${curr.ird}</td><td><span class="trend ${trendClass}">${trendText}</span></td></tr>`;
+                    }).join('')}
+                </tbody>
+            </table>
+            <div class="history-cpt">
+                <div style="font-weight:700; color:#1e40af; margin-bottom:10px;">🔄 Вопросы для анализа эволюции:</div>
+                <ul class="questions-list">
+                    <li>Где произошла разгрузка? Какие ваши действия к этому привели?</li>
+                    <li>Если в Финансах или Карьере давление выросло — не вернулись ли вы к старому паттерну бегства через гиперконтроль?</li>
+                    <li>Какие факты доказывают, что смена роли не разрушила вашу личность, а укрепила её гибкость?</li>
+                </ul>
+            </div>
+        `;
+        this.setupEvents();
+    }
+
+    setupEvents() {
+        this.shadowRoot.querySelector('#session-select')?.addEventListener('change', (e) => {
+            this.selectedCompareId = parseInt(e.target.value);
+            this.render();
+        });
+        this.shadowRoot.querySelector('#btn-delete-session')?.addEventListener('click', () => {
+            if (confirm('Удалить эту запись?')) {
+                window.AppState.deleteSession(this.selectedCompareId);
+                this.selectedCompareId = null;
+                this.render();
+            }
+        });
+    }
+}
+customElements.define('balance-history', BalanceHistory);
+
+// ----------------------------------------------
+// Корневой компонент SPA (навигация на 6 экранов)
 // ----------------------------------------------
 class AppRoot extends HTMLElement {
     constructor() {
@@ -563,28 +568,18 @@ class AppRoot extends HTMLElement {
         window.addEventListener('state-changed', () => this.render());
     }
 
-    connectedCallback() {
-        this.render();
-    }
+    connectedCallback() { this.render(); }
 
     render() {
         const step = window.AppState.currentStep;
-        const title = (step < 5) ? window.AppState.titles[step] : 'Диагностика завершена';
+        const title = step < 5 ? window.AppState.titles[step] : 
+                     (step === 5 ? '🎯 Результаты 4D-диагностики' : '📜 История изменений');
         
         this.shadowRoot.innerHTML = `
             <style>
-                .header { 
-                    font-size: 18px; font-weight: 600; color: #0f172a; 
-                    margin-bottom: 20px; text-align: center; 
-                }
-                .nav-bar { 
-                    display: flex; justify-content: space-between; margin-top: 25px; gap: 10px; 
-                }
-                button {
-                    padding: 12px 24px; border: none; border-radius: 8px; 
-                    font-weight: 600; cursor: pointer; transition: background 0.2s; 
-                    font-size: 14px;
-                }
+                .header { font-size: 18px; font-weight: 600; color: #0f172a; margin-bottom: 20px; text-align: center; }
+                .nav-bar { display: flex; justify-content: space-between; margin-top: 25px; gap: 10px; }
+                button { padding: 12px 24px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 14px; }
                 .btn-primary { background: #3b82f6; color: white; }
                 .btn-primary:hover { background: #2563eb; }
                 .btn-secondary { background: #e2e8f0; color: #475569; }
@@ -592,28 +587,32 @@ class AppRoot extends HTMLElement {
                 button:disabled { opacity: 0.5; cursor: not-allowed; }
             </style>
             <div class="header">${title}</div>
-            ${step < 5 ? `<balance-list step="${step}"></balance-list>` : `<balance-dashboard></balance-dashboard>`}
+            ${step < 5 ? `<balance-list step="${step}"></balance-list>` : ''}
+            ${step === 5 ? `<balance-dashboard></balance-dashboard>` : ''}
+            ${step === 6 ? `<balance-history></balance-history>` : ''}
             <div class="nav-bar">
                 <button class="btn-secondary" id="btn-home" ${step === 1 ? 'disabled' : ''}>🏠 Домой</button>
                 <button class="btn-secondary" id="btn-back" ${step === 1 ? 'disabled' : ''}>← Назад</button>
                 <button class="btn-primary" id="btn-next">
-                    ${step === 5 ? '🔄 Заново' : (step === 4 ? '📊 Показать результат' : 'Далее →')}
+                    ${step === 4 ? '📊 Показать результат' : 
+                      step === 5 ? '💾 Сохранить и история' : 
+                      step === 6 ? '🔄 Пройти заново' : 'Далее →'}
                 </button>
             </div>
         `;
-
         this.setupNavigation();
     }
 
     setupNavigation() {
-        this.shadowRoot.querySelector('#btn-home').addEventListener('click', () => {
-            window.AppState.reset();
-        });
-        this.shadowRoot.querySelector('#btn-back').addEventListener('click', () => {
-            window.AppState.moveStep(-1);
-        });
-        this.shadowRoot.querySelector('#btn-next').addEventListener('click', () => {
-            if (window.AppState.currentStep === 5) {
+        this.shadowRoot.querySelector('#btn-home')?.addEventListener('click', () => window.AppState.reset());
+        this.shadowRoot.querySelector('#btn-back')?.addEventListener('click', () => window.AppState.moveStep(-1));
+        this.shadowRoot.querySelector('#btn-next')?.addEventListener('click', () => {
+            const step = window.AppState.currentStep;
+            if (step === 5) {
+                window.AppState.saveCurrentSession();
+                window.AppState.currentStep = 6;
+                window.dispatchEvent(new CustomEvent('state-changed'));
+            } else if (step === 6) {
                 window.AppState.reset();
             } else {
                 window.AppState.moveStep(1);
