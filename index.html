@@ -164,7 +164,7 @@ class BalanceList extends HTMLElement {
         this.shadowRoot.innerHTML = `
             <style>
                 :host { display: block; width: 100%; }
-                .container { display: grid; grid-template-columns: auto 1fr; gap: 12px; margin: 16px 0; }
+                .container { display: grid; gap: 12px; margin: 16px 0; }
                 .scale { display: flex; flex-direction: column; gap: 8px; }
                 .static-badge {
                     background: var(--md-surface-variant);
@@ -204,9 +204,6 @@ class BalanceList extends HTMLElement {
                 }
             </style>
             <div class="container">
-                <div class="scale">
-                    ${items.map((_, idx) => `<div class="static-badge">Вес: ${10-idx}</div>`).join('')}
-                </div>
                 <div class="list">
                     ${items.map((name, idx) => `
                         <div class="item-wrapper" data-index="${idx}">
