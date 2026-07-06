@@ -83,7 +83,7 @@ window.AppState = {
 };
 
 // ----------------------------------------------
-// Компонент: сортируемый список с раздельной сеткой
+// Компонент: сортируемый список (раздельная сетка, Touch)
 // ----------------------------------------------
 class BalanceList extends HTMLElement {
     constructor() {
@@ -279,7 +279,7 @@ class BalanceList extends HTMLElement {
         wrappers.forEach(wrapper => {
             const item = wrapper.querySelector('.item');
 
-            // Паттерн А: Клик-навигация
+            // Клик-навигация
             item.addEventListener('click', () => {
                 const index = parseInt(wrapper.dataset.index);
                 
@@ -296,7 +296,7 @@ class BalanceList extends HTMLElement {
                 }
             });
 
-            // Паттерн Б: Touch API
+            // Touch API
             item.addEventListener('touchstart', (e) => {
                 this.draggedIndex = parseInt(wrapper.dataset.index);
                 this.touchDraggedItem = item;
@@ -376,12 +376,52 @@ class BalanceList extends HTMLElement {
 customElements.define('balance-list', BalanceList);
 
 // ----------------------------------------------
-// Компонент: финальная аналитика (шаг 5)
+// Компонент: интерактивная аналитика с КПТ-вопросами
 // ----------------------------------------------
 class BalanceDashboard extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
+        this.psychologyDatabase = {
+            violence: {
+                insight: "Психика использует эту сферу как «кредитную карту» — вы берете из общего бака энергию в долг под огромный процент, чтобы заглушить базовую тревогу или соответствовать чужим ожиданиям.",
+                questions: {
+                    "Карьера и бизнес": [
+                        "Чьи именно ожидания (родителей, социума, бывших коллег) вы обслуживаете, заставляя себя удерживать здесь фокус?",
+                        "Какого страшного сценария вы избегаете, уходя с головой в работу? От чего вы прячетесь в бесконечной операционке?",
+                        "Если вы снизите планку перфекционизма в работе на 20%, что самое худшее произойдет на самом деле?"
+                    ],
+                    "Финансы": [
+                        "Какую психологическую потребность вы пытаетесь закрыть деньгами (безопасность, признание, любовь, автономия)? Насколько успешно они с этим справляются?",
+                        "Вы чувствуете себя «несуществующим» или неценным, когда не приносите деньги? Откуда взялось это жесткое убеждение?",
+                        "Если временно убрать доход из уравнения, какие другие ваши сильные стороны и человеческие качества остаются неизменными?"
+                    ],
+                    "default": [
+                        "Что заставляет вас искусственно удерживать высокую важность этой сферы, несмотря на внутреннее сопротивление?",
+                        "Какую цену (здоровьем, отношениями, временем) вы платите за то, чтобы эта сфера выглядела «нормально»?",
+                        "Как выглядит минимальный шаг по ослаблению контроля в этом направлении?"
+                    ]
+                }
+            },
+            sabotage: {
+                insight: "Здесь живет внутренний конфликт: вы искренне считаете сферу важной, но мозг блокирует действия (саботирует), потому что боится неудачи, выгорания или новой ответственности. Энергия сливается на мысленную жвачку «надо бы сделать».",
+                questions: {
+                    "Личностный рост": [
+                        "Не превратилось ли обучение в легальный способ отложить реальные действия? Вы учитесь, чтобы начать, или чтобы не начинать?",
+                        "Какого конкретно практического шага (публикация, предложение услуг, заявление о себе) вы избегаете за щитом новых дипломов?"
+                    ],
+                    "Карьера и бизнес": [
+                        "Если речь идет о старте новой практики (например, психолога): какой самый большой страх мешает сделать первое публичное заявление?",
+                        "Опишите вашего «внутреннего критика» в этой сфере. Какими словами он убеждает вас отложить первые шаги?"
+                    ],
+                    "default": [
+                        "Какая автоматическая мысль возникает в голове за секунду до того, как вы собираетесь сделать шаг в этой сфере?",
+                        "Какое минимальное неидеальное действие (на 5 минут) вы можете сделать прямо сегодня, чтобы обмануть страх?",
+                        "Как изменится ваша жизнь через 3 месяца, если вы продолжите просто думать об этой сфере, но ничего не предпринимать?"
+                    ]
+                }
+            }
+        };
     }
 
     connectedCallback() {
@@ -403,75 +443,110 @@ class BalanceDashboard extends HTMLElement {
             return { name, pNow, pWant, tNow, tWant, dP, dT, ird };
         });
 
-        const violenceZone = metrics.filter(m => (m.tNow > m.tWant) && (m.pNow > m.pWant));
-        const sabotageZone = metrics.filter(m => 
-            ((m.tNow < m.tWant) && (m.pNow > m.pWant)) || 
-            (m.ird < 0 && !violenceZone.includes(m))
-        );
+        const violenceZone = metrics.filter(m => (m.dT > 0) && (m.dP > 0));
+        const sabotageZone = metrics.filter(m => (m.ird < 0) || (m.dT < 0 && m.dP > 0));
         const healthyZone = metrics.filter(m => !violenceZone.includes(m) && !sabotageZone.includes(m));
 
-        this.render({ violenceZone, sabotageZone, healthyZone });
+        this.render(violenceZone, sabotageZone, healthyZone);
     }
 
-    render({ violenceZone, sabotageZone, healthyZone }) {
+    getQuestions(zoneType, sphereName) {
+        const db = this.psychologyDatabase[zoneType];
+        if (!db) return [];
+        return db.questions[sphereName] || db.questions["default"];
+    }
+
+    render(violence, sabotage, healthy) {
         this.shadowRoot.innerHTML = `
             <style>
-                h2 { color: #1e293b; margin-bottom: 20px; }
-                .card { 
-                    padding: 16px; border-radius: 12px; margin-bottom: 16px; 
-                    border-left: 5px solid #ccc; background: #f8fafc;
-                }
-                .violence { border-left-color: #ef4444; background: #fef2f2; }
-                .sabotage { border-left-color: #f59e0b; background: #fffbeb; }
-                .healthy { border-left-color: #10b981; background: #f0fdf4; }
-                h3 { margin: 0 0 8px 0; font-size: 16px; }
-                p { margin: 0; font-size: 14px; color: #475569; line-height: 1.5; }
-                .sphere-tag { 
-                    display: inline-block; background: rgba(0,0,0,0.05); padding: 2px 8px; 
-                    border-radius: 4px; font-size: 13px; margin-top: 5px; font-weight: bold;
-                }
-                .advice { 
-                    margin-top: 20px; padding: 16px; background: #f1f5f9; border-radius: 10px; 
-                    font-size: 14px; color: #334155;
-                }
+                :host { display: block; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+                h2 { color: #0f172a; font-size: 22px; margin-bottom: 24px; display: flex; align-items: center; gap: 8px; }
+                
+                .zone-section { padding: 20px; border-radius: 14px; margin-bottom: 24px; border: 1px solid #e2e8f0; background: #ffffff; }
+                .zone-section.violence { border-left: 6px solid #ef4444; }
+                .zone-section.sabotage { border-left: 6px solid #f59e0b; }
+                .zone-section.healthy { border-left: 6px solid #10b981; background: #f8fafc; }
+                
+                .zone-title { font-size: 16px; font-weight: 700; margin: 0 0 6px 0; display: flex; align-items: center; gap: 8px; }
+                .zone-title.v-text { color: #b91c1c; }
+                .zone-title.s-text { color: #b45309; }
+                .zone-title.h-text { color: #047857; }
+                
+                .zone-desc { font-size: 14px; color: #475569; margin: 0 0 16px 0; line-height: 1.5; }
+                
+                .badge-container { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+                .sphere-badge { background: #f1f5f9; padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; color: #334155; border: 1px solid #cbd5e1; }
+                .violence .sphere-badge { background: #fef2f2; color: #991b1b; border-color: #fca5a5; }
+                .sabotage .sphere-badge { background: #fffbeb; color: #92400e; border-color: #fcd34d; }
+                
+                .cpt-container { background: #f8fafc; border-radius: 10px; padding: 16px; margin-top: 14px; border: 1px solid #e2e8f0; }
+                .cpt-insight { font-size: 13px; font-style: italic; color: #334155; margin-bottom: 12px; line-height: 1.5; border-left: 3px solid #64748b; padding-left: 10px; }
+                .cpt-title { font-size: 13px; font-weight: 700; color: #1e293b; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+                
+                .questions-list { margin: 0; padding-left: 20px; }
+                .questions-list li { font-size: 14px; color: #1e293b; margin-bottom: 10px; line-height: 1.5; font-weight: 500; }
+                
+                .mvp-box { background: #eff6ff; border: 1px dashed #bfdbfe; border-radius: 8px; padding: 12px; margin-top: 12px; font-size: 13px; color: #1e40af; line-height: 1.4; }
+                
+                .global-tip { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 16px; border-radius: 12px; font-size: 14px; color: #166534; line-height: 1.5; margin-top: 30px; }
             </style>
-            <h2>🧠 Результаты 4D-диагностики</h2>
+
+            <h2>🎯 Результаты 4D-диагностики системы</h2>
             
-            <div class="card violence">
-                <h3>🔴 Зона насилия (скрытые грыжи)</h3>
-                <p>Вы тратите сюда больше сил и придаёте больший приоритет, чем хочется на самом деле. Эти сферы истощают общий ресурс:</p>
-                <div>
-                    ${violenceZone.length ? violenceZone.map(m => 
-                        `<span class="sphere-tag">${m.name} (ИРД: ${m.ird})</span>`
-                    ).join(' ') : '<i style="color:#64748b;">Чисто — насилия над собой не обнаружено</i>'}
+            <div class="zone-section violence">
+                <div class="zone-title v-text">🔴 Зона насилия (Скрытые грыжи)</div>
+                <div class="zone-desc">Вы тратите сюда слишком много фактического времени и искусственно завышаете важность в ущерб истинным желаниям. Сферы выжигают общий ресурс:</div>
+                
+                <div class="badge-container">
+                    ${violence.length ? violence.map(m => `<div class="sphere-badge">${m.name} (ИРД: +${m.ird})</div>`).join('') : '<i>Скрытых грыж не обнаружено. Отличный маркер безопасности.</i>'}
+                </div>
+
+                ${violence.map(m => `
+                    <div class="cpt-container">
+                        <div class="cpt-title">Разбор деформации: ${m.name}</div>
+                        <div class="cpt-insight">${this.psychologyDatabase.violence.insight}</div>
+                        <ul class="questions-list">
+                            ${this.getQuestions('violence', m.name).map(q => `<li>${q}</li>`).join('')}
+                        </ul>
+                        <div class="mvp-box">
+                            🏃‍♂️ <b>КПТ-эксперимент (MVP):</b> На этой неделе сознательно снизьте время на контроль этой сферы на 10%. Зафиксируйте в блокноте: подтвердились ли катастрофические мысли ума?
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+
+            <div class="zone-section sabotage">
+                <div class="zone-title s-text">🟡 Зона напряжения и саботажа</div>
+                <div class="zone-desc">Внутренний конфликт. Высокие ментальные требования при жестком дефиците реальных действий. Ресурс сливается на фоновую тревогу и самобичевание вместо шагов:</div>
+                
+                <div class="badge-container">
+                    ${sabotage.length ? sabotage.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : 'Зон саботажа не обнаружено. Ваши действия синхронны планам.'}
+                </div>
+
+                ${sabotage.map(m => `
+                    <div class="cpt-container">
+                        <div class="cpt-title">Разбор паралича: ${m.name}</div>
+                        <div class="cpt-insight">${this.psychologyDatabase.sabotage.insight}</div>
+                        <ul class="questions-list">
+                            ${this.getQuestions('sabotage', m.name).map(q => `<li>${q}</li>`).join('')}
+                        </ul>
+                        <div class="mvp-box">
+                            🛠 <b>КПТ-эксперимент (MVP):</b> Обманите страх уязвимости. Сделайте сверхмалое действие в этой сфере прямо сегодня. Не «начните практику», а просто «напишите один абзац текста-знакомства в черновик». Сделайте его умышленно неидеальным.
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+
+            <div class="zone-section healthy">
+                <div class="zone-title h-text">🟢 Системное здоровье</div>
+                <div class="zone-desc">Действия и ценности синхронизированы. Ресурс распределяется адекватно вашему внутреннему запросу:</div>
+                <div class="badge-container">
+                    ${healthy.length ? healthy.map(m => `<div class="sphere-badge">${m.name}</div>`).join('') : 'Сфер в полном балансе пока не зафиксировано.'}
                 </div>
             </div>
 
-            <div class="card sabotage">
-                <h3>🟡 Зона напряжения и саботажа</h3>
-                <p>Высокие внутренние требования при нехватке реальных действий. Мысленная жвачка «надо бы» парализует практику:</p>
-                <div>
-                    ${sabotageZone.length ? sabotageZone.map(m => 
-                        `<span class="sphere-tag">${m.name}</span>`
-                    ).join(' ') : '<i style="color:#64748b;">Разрывов нет</i>'}
-                </div>
-            </div>
-
-            <div class="card healthy">
-                <h3>🟢 Системное здоровье</h3>
-                <p>Действия и ценности синхронизированы. Ресурс расходуется адекватно:</p>
-                <div>
-                    ${healthyZone.length ? healthyZone.map(m => 
-                        `<span class="sphere-tag">${m.name}</span>`
-                    ).join(' ') : '<i style="color:#64748b;">Пока ни одна сфера не находится в полном балансе</i>'}
-                </div>
-            </div>
-
-            <div class="advice">
-                💡 <b>Психологическая рекомендация:</b><br>
-                Если обнаружена «Зона насилия», первый шаг — не исправлять просевшие сферы, 
-                а сознательно снизить контроль и внутреннюю «важность» в зоне насилия. 
-                Высвобожденное мыслетопливо автоматически потечёт в практику и восстановление баланса.
+            <div class="global-tip">
+                💡 <b>Главный терапевтический вывод:</b> Лобовая попытка «спасать» сферы из Зоны Саботажа (например, заставлять себя запускать практику, когда вы истощены) не сработает. Сначала нужно перекрыть течь — легально снизить планку и важность в Зоне Насилия. Как только вы вернете мыслетопливо из грыж, у мозга физически появится биологическая энергия на старт шагов в саботируемых зонах.
             </div>
         `;
     }
@@ -479,7 +554,7 @@ class BalanceDashboard extends HTMLElement {
 customElements.define('balance-dashboard', BalanceDashboard);
 
 // ----------------------------------------------
-// Корневой компонент SPA (навигация и рендеринг экранов)
+// Корневой компонент SPA (навигация)
 // ----------------------------------------------
 class AppRoot extends HTMLElement {
     constructor() {
