@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>4D Колесо баланса</title>
     <style>
         body {
@@ -56,8 +57,6 @@ window.AppState = {
     moveStep(direction) {
         const next = this.currentStep + direction;
         if (next >= 1 && next <= 5) {
-            // При движении вперёд, если следующий шаг ещё не трогали,
-            // инициализируем его текущим порядком предыдущего шага
             if (direction === 1 && next < 5 && 
                 JSON.stringify(this.snapshots[next]) === JSON.stringify(DEFAULT_SPHERES)) {
                 this.snapshots[next] = [...this.snapshots[this.currentStep]];
@@ -84,25 +83,24 @@ window.AppState = {
 };
 
 // ----------------------------------------------
-// Компонент: сортируемый список с интуитивными плашками
+// Компонент: сортируемый список с раздельной сеткой
 // ----------------------------------------------
 class BalanceList extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
+        this.draggedIndex = null;
+        this.touchDraggedItem = null;
+        this.touchStartY = 0;
+        this.selectedIndex = null;
     }
 
     connectedCallback() {
         this.render();
     }
 
-    static get observedAttributes() {
-        return ['step'];
-    }
-
-    attributeChangedCallback() {
-        this.render();
-    }
+    static get observedAttributes() { return ['step']; }
+    attributeChangedCallback() { this.render(); }
 
     render() {
         const step = parseInt(this.getAttribute('step'));
@@ -110,83 +108,78 @@ class BalanceList extends HTMLElement {
         
         this.shadowRoot.innerHTML = `
             <style>
+                :host { display: block; width: 100%; box-sizing: border-box; }
+                
+                .container { 
+                    display: grid; 
+                    grid-template-columns: auto 1fr; 
+                    gap: 16px; 
+                    margin: 20px 0; 
+                    position: relative;
+                }
+                
+                .scale { 
+                    display: flex; 
+                    flex-direction: column; 
+                    gap: 12px; 
+                    padding: 6px 0;
+                }
+                .static-badge {
+                    background: #f8fafc;
+                    padding: 14px 10px;
+                    border-radius: 10px;
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: #64748b;
+                    border: 1px dashed #cbd5e1;
+                    min-width: 80px;
+                    box-sizing: border-box;
+                    text-align: center;
+                    height: 52px;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                }
+                
                 .list { 
                     display: flex; 
                     flex-direction: column; 
+                    gap: 12px; 
+                    padding: 6px 0;
                     position: relative;
-                    margin: 20px 0; 
                 }
+                
                 .item-wrapper {
                     position: relative;
-                    padding: 6px 0; /* буферная зона для дропа */
+                    height: 52px;
                 }
+                
                 .item { 
-                    padding: 16px; 
+                    padding: 14px 16px; 
                     background: #ffffff; 
                     border: 1px solid #e2e8f0; 
-                    border-radius: 12px; 
+                    border-radius: 10px; 
                     cursor: grab; 
                     user-select: none;
                     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
-                    transition: background-color 0.2s, box-shadow 0.2s, transform 0.1s;
                     display: flex; 
                     align-items: center; 
-                    justify-content: space-between;
+                    justify-content: space-between; 
                     color: #1e293b;
+                    height: 100%;
+                    box-sizing: border-box;
+                    touch-action: none;
                 }
+                
                 .item:active { cursor: grabbing; }
-                .item:hover {
-                    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-                    background-color: #fafafa;
-                }
-                .item.dragging { 
-                    opacity: 0.4; 
-                    background: #f8fafc; 
-                    box-shadow: none;
-                }
+                .item.dragging { opacity: 0.3; background: #f1f5f9; box-shadow: none; }
+                .item.selected { border-color: #3b82f6; background: #eff6ff; box-shadow: 0 0 0 2px #3b82f6; }
                 
-                /* Левая часть: прямоугольный бейдж + название */
-                .item-left {
-                    display: flex;
-                    align-items: center;
-                    gap: 14px;
-                }
+                .name { font-size: 15px; font-weight: 500; }
                 
-                .badge { 
-                    background: #f1f5f9; 
-                    padding: 6px 10px;
-                    border-radius: 6px; 
-                    font-size: 13px; 
-                    font-weight: 600;
-                    color: #475569; 
-                    border: 1px solid #cbd5e1;
-                    min-width: 70px;
-                    text-align: center;
-                }
+                .drag-handle { display: flex; flex-direction: column; gap: 3px; cursor: grab; }
+                .drag-handle span { width: 4px; height: 4px; background-color: #94a3b8; border-radius: 50%; }
                 
-                .name {
-                    font-size: 15px;
-                    font-weight: 500;
-                }
-                
-                /* Правая часть: вертикальные точки (грип-маркер) */
-                .drag-handle {
-                    display: flex;
-                    flex-direction: column;
-                    gap: 3px;
-                    padding: 4px;
-                }
-                .drag-handle span {
-                    width: 4px;
-                    height: 4px;
-                    background-color: #94a3b8;
-                    border-radius: 50%;
-                }
-                .item:hover .drag-handle span {
-                    background-color: #64748b;
-                }
-                
-                /* Линия-индикатор между блоками */
                 .drop-indicator {
                     position: absolute;
                     left: 0;
@@ -198,44 +191,53 @@ class BalanceList extends HTMLElement {
                     pointer-events: none;
                     z-index: 10;
                 }
-                .item-wrapper.drag-before .drop-indicator.top { display: block; top: -2px; }
-                .item-wrapper.drag-after .drop-indicator.bottom { display: block; bottom: -2px; }
+                .item-wrapper.drag-before .drop-indicator.top { display: block; top: -8px; }
+                .item-wrapper.drag-after .drop-indicator.bottom { display: block; bottom: -8px; }
+
+                @media (max-width: 480px) {
+                    .static-badge { min-width: 65px; font-size: 11px; padding: 10px 4px;}
+                    .name { font-size: 13px; }
+                    .container { gap: 8px; }
+                }
             </style>
-            <div class="list">
-                ${items.map((name, idx) => `
-                    <div class="item-wrapper" data-index="${idx}">
-                        <div class="drop-indicator top"></div>
-                        <div class="item" draggable="true">
-                            <div class="item-left">
-                                <div class="badge">Баллов: ${10 - idx}</div>
+            
+            <div class="container">
+                <div class="scale">
+                    ${items.map((_, idx) => `<div class="static-badge">Баллов: ${10 - idx}</div>`).join('')}
+                </div>
+                
+                <div class="list">
+                    ${items.map((name, idx) => `
+                        <div class="item-wrapper" data-index="${idx}">
+                            <div class="drop-indicator top"></div>
+                            <div class="item" draggable="true">
                                 <div class="name">${name}</div>
+                                <div class="drag-handle">
+                                    <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                                    <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                                    <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                                </div>
                             </div>
-                            <!-- Грип-маркер: 6 точек (2 колонки по 3) -->
-                            <div class="drag-handle">
-                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
-                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
-                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
-                            </div>
+                            <div class="drop-indicator bottom"></div>
                         </div>
-                        <div class="drop-indicator bottom"></div>
-                    </div>
-                `).join('')}
+                    `).join('')}
+                </div>
             </div>
         `;
 
-        this.setupDragAndDrop();
+        this.setupDesktopDragAndDrop();
+        this.setupMobileTouchAndClick();
     }
 
-    setupDragAndDrop() {
+    setupDesktopDragAndDrop() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
-        let draggedIndex = null;
-        let dropPosition = null; 
+        let dropPosition = null;
 
         wrappers.forEach(wrapper => {
             const item = wrapper.querySelector('.item');
 
             item.addEventListener('dragstart', (e) => {
-                draggedIndex = parseInt(wrapper.dataset.index);
+                this.draggedIndex = parseInt(wrapper.dataset.index);
                 item.classList.add('dragging');
                 e.dataTransfer.effectAllowed = 'move';
             });
@@ -247,14 +249,11 @@ class BalanceList extends HTMLElement {
 
             wrapper.addEventListener('dragover', (e) => {
                 e.preventDefault();
-                
                 const bounding = wrapper.getBoundingClientRect();
                 const offset = e.clientY - bounding.top;
-                const h = bounding.height;
-                
                 this.clearIndicators();
 
-                if (offset < h / 2) {
+                if (offset < bounding.height / 2) {
                     wrapper.classList.add('drag-before');
                     dropPosition = 'before';
                 } else {
@@ -263,43 +262,115 @@ class BalanceList extends HTMLElement {
                 }
             });
 
-            wrapper.addEventListener('dragleave', () => {
-                wrapper.classList.remove('drag-before', 'drag-after');
-            });
+            wrapper.addEventListener('dragleave', () => this.clearIndicators());
 
             wrapper.addEventListener('drop', (e) => {
                 e.preventDefault();
-                this.clearIndicators();
-                
-                const targetIndex = parseInt(wrapper.dataset.index);
-                
-                if (draggedIndex !== null && draggedIndex !== targetIndex) {
-                    const step = parseInt(this.getAttribute('step'));
-                    const listData = [...window.AppState.snapshots[step]];
-                    const [draggedItem] = listData.splice(draggedIndex, 1);
-                    
-                    let newIndex = targetIndex;
-                    if (dropPosition === 'after' && draggedIndex > targetIndex) {
-                        newIndex = targetIndex + 1;
-                    } else if (dropPosition === 'before' && draggedIndex < targetIndex) {
-                        newIndex = targetIndex - 1;
-                    }
-                    
-                    if (newIndex < 0) newIndex = 0;
-                    if (newIndex > listData.length) newIndex = listData.length;
-
-                    listData.splice(newIndex, 0, draggedItem);
-                    window.AppState.updateSnapshot(step, listData);
-                    this.render(); 
-                }
-                draggedIndex = null;
+                this.executeReorder(parseInt(wrapper.dataset.index), dropPosition);
             });
         });
     }
 
-    clearIndicators() {
+    setupMobileTouchAndClick() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
-        wrappers.forEach(w => w.classList.remove('drag-before', 'drag-after'));
+        let dropPosition = null;
+        let lastTargetWrapper = null;
+
+        wrappers.forEach(wrapper => {
+            const item = wrapper.querySelector('.item');
+
+            // Паттерн А: Клик-навигация
+            item.addEventListener('click', () => {
+                const index = parseInt(wrapper.dataset.index);
+                
+                if (this.selectedIndex === null) {
+                    this.selectedIndex = index;
+                    item.classList.add('selected');
+                } else {
+                    if (this.selectedIndex !== index) {
+                        this.draggedIndex = this.selectedIndex;
+                        this.executeReorder(index, 'before');
+                    }
+                    this.selectedIndex = null;
+                    this.shadowRoot.querySelectorAll('.item').forEach(i => i.classList.remove('selected'));
+                }
+            });
+
+            // Паттерн Б: Touch API
+            item.addEventListener('touchstart', (e) => {
+                this.draggedIndex = parseInt(wrapper.dataset.index);
+                this.touchDraggedItem = item;
+                this.touchStartY = e.touches[0].clientY;
+                item.style.position = 'relative';
+                item.style.zIndex = '100';
+            });
+
+            item.addEventListener('touchmove', (e) => {
+                if (!this.touchDraggedItem) return;
+                const currentY = e.touches[0].clientY;
+                const deltaY = currentY - this.touchStartY;
+                
+                this.touchDraggedItem.style.transform = `translateY(${deltaY}px)`;
+
+                this.clearIndicators();
+                const targetEl = this.shadowRoot.elementFromPoint(e.touches[0].clientX, currentY);
+                const currentWrapper = targetEl ? targetEl.closest('.item-wrapper') : null;
+                if (currentWrapper) {
+                    lastTargetWrapper = currentWrapper;
+                    const bounding = currentWrapper.getBoundingClientRect();
+                    const offset = currentY - bounding.top;
+                    if (offset < bounding.height / 2) {
+                        currentWrapper.classList.add('drag-before');
+                        dropPosition = 'before';
+                    } else {
+                        currentWrapper.classList.add('drag-after');
+                        dropPosition = 'after';
+                    }
+                }
+            });
+
+            item.addEventListener('touchend', () => {
+                if (!this.touchDraggedItem) return;
+                this.touchDraggedItem.style.transform = '';
+                this.touchDraggedItem.style.position = '';
+                this.touchDraggedItem.style.zIndex = '';
+                this.clearIndicators();
+                if (lastTargetWrapper && this.draggedIndex !== null) {
+                    this.executeReorder(parseInt(lastTargetWrapper.dataset.index), dropPosition);
+                }
+                this.touchDraggedItem = null;
+                this.draggedIndex = null;
+                lastTargetWrapper = null;
+            });
+        });
+    }
+
+    executeReorder(targetIndex, position) {
+        if (this.draggedIndex === null || this.draggedIndex === targetIndex) return;
+        const step = parseInt(this.getAttribute('step'));
+        const listData = [...window.AppState.snapshots[step]];
+        const [draggedItem] = listData.splice(this.draggedIndex, 1);
+        
+        let newIndex = targetIndex;
+        if (position === 'after' && this.draggedIndex > targetIndex) {
+            newIndex = targetIndex + 1;
+        } else if (position === 'before' && this.draggedIndex < targetIndex) {
+            newIndex = targetIndex - 1;
+        }
+        
+        if (newIndex < 0) newIndex = 0;
+        if (newIndex > listData.length) newIndex = listData.length;
+
+        listData.splice(newIndex, 0, draggedItem);
+        window.AppState.updateSnapshot(step, listData);
+        this.render();
+        this.draggedIndex = null;
+    }
+
+    clearIndicators() {
+        this.shadowRoot.querySelectorAll('.item-wrapper').forEach(w => {
+            w.classList.remove('drag-before', 'drag-after');
+        });
     }
 }
 customElements.define('balance-list', BalanceList);
