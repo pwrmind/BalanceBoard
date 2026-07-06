@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>4D Колесо баланса</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f5f7fb;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+        #app {
+            width: 100%;
+            max-width: 600px;
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.05);
+        }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <app-root></app-root>
+</div>
+
+<script>
+// ----------------------------------------------
+// Глобальное состояние и константы
+// ----------------------------------------------
+const DEFAULT_SPHERES = [
+    'Здоровье и спорт', 'Карьера и бизнес', 'Финансы', 
+    'Окружение и друзья', 'Семья и отношения', 
+    'Личностный рост', 'Яркость жизни', 'Духовность'
+];
+
+window.AppState = {
+    currentStep: 1,
+    snapshots: {
+        1: [...DEFAULT_SPHERES], // P сейчас
+        2: [...DEFAULT_SPHERES], // P хочу
+        3: [...DEFAULT_SPHERES], // T сейчас
+        4: [...DEFAULT_SPHERES]  // T хочу
+    },
+    titles: {
+        1: "1. Приоритет: КАК СЕЙЧАС (Сверху — самое важное)",
+        2: "2. Приоритет: КАК ХОЧУ (Сверху — самое важное)",
+        3: "3. Время и внимание: КАК СЕЙЧАС (Сверху — уходит больше всего сил)",
+        4: "4. Время и внимание: КАК ХОЧУ (Сверху — хочу уделять больше всего сил)"
+    },
+    
+    moveStep(direction) {
+        const next = this.currentStep + direction;
+        if (next >= 1 && next <= 5) {
+            // При движении вперёд, если следующий шаг ещё не трогали,
+            // инициализируем его текущим порядком предыдущего шага
+            if (direction === 1 && next < 5 && 
+                JSON.stringify(this.snapshots[next]) === JSON.stringify(DEFAULT_SPHERES)) {
+                this.snapshots[next] = [...this.snapshots[this.currentStep]];
+            }
+            this.currentStep = next;
+            window.dispatchEvent(new CustomEvent('state-changed'));
+        }
+    },
+    
+    updateSnapshot(step, newList) {
+        this.snapshots[step] = newList;
+    },
+    
+    reset() {
+        this.currentStep = 1;
+        this.snapshots = {
+            1: [...DEFAULT_SPHERES],
+            2: [...DEFAULT_SPHERES],
+            3: [...DEFAULT_SPHERES],
+            4: [...DEFAULT_SPHERES]
+        };
+        window.dispatchEvent(new CustomEvent('state-changed'));
+    }
+};
+
+// ----------------------------------------------
+// Компонент: сортируемый список (Drag-and-Drop)
+// ----------------------------------------------
+class BalanceList extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({ mode: 'open' });
+    }
+
+    connectedCallback() {
+        this.render();
+    }
+
+    static get observedAttributes() {
+        return ['step'];
+    }
+
+    attributeChangedCallback() {
+        this.render();
+    }
+
+    render() {
+        const step = parseInt(this.getAttribute('step'));
+        const items = window.AppState.snapshots[step] || DEFAULT_SPHERES;
+        
+        this.shadowRoot.innerHTML = `
+            <style>
+                .list { display: flex; flex-direction: column; gap: 10px; margin: 20px 0; }
+                .item { 
+                    padding: 14px; background: #fff; border: 2px solid #eef2f6; 
+                    border-radius: 10px; cursor: grab; user-select: none;
+                    transition: background 0.2s, border-color 0.2s;
+                    display: flex; align-items: center; font-weight: 500; color: #334155;
+                }
+                .item:active { cursor: grabbing; }
+                .item.dragover { border-color: #3b82f6; background: #eff6ff; }
+                .index { 
+                    background: #f1f5f9; min-width: 28px; height: 28px; border-radius: 50%; 
+                    display: flex; align-items: center; justify-content: center; 
+                    font-size: 13px; margin-right: 12px; color: #64748b; font-weight: bold;
+                }
+            </style>
+            <div class="list">
+                ${items.map((name, idx) => `
+                    <div class="item" draggable="true" data-index="${idx}">
+                        <div class="index">${10 - idx}</div>
+                        <div class="name">${name}</div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        this.setupDragAndDrop();
+    }
+
+    setupDragAndDrop() {
+        const listContainer = this.shadowRoot.querySelector('.list');
+        if (!listContainer) return;
+        
+        const items = this.shadowRoot.querySelectorAll('.item');
+        let draggedItem = null;
+
+        items.forEach(item => {
+            item.addEventListener('dragstart', (e) => {
+                draggedItem = item;
+                e.dataTransfer.effectAllowed = 'move';
+                // Делаем элемент полупрозрачным
+                item.style.opacity = '0.5';
+            });
+
+            item.addEventListener('dragend', () => {
+                item.style.opacity = '1';
+                draggedItem = null;
+                // Убираем подсветку со всех элементов
+                items.forEach(i => i.classList.remove('dragover'));
+            });
+
+            item.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                item.classList.add('dragover');
+            });
+
+            item.addEventListener('dragleave', () => {
+                item.classList.remove('dragover');
+            });
+
+            item.addEventListener('drop', (e) => {
+                e.preventDefault();
+                item.classList.remove('dragover');
+                
+                if (draggedItem && draggedItem !== item) {
+                    const step = parseInt(this.getAttribute('step'));
+                    const listData = [...window.AppState.snapshots[step]];
+                    const fromIdx = parseInt(draggedItem.dataset.index);
+                    const toIdx = parseInt(item.dataset.index);
+
+                    if (!isNaN(fromIdx) && !isNaN(toIdx) && fromIdx !== toIdx) {
+                        const [moved] = listData.splice(fromIdx, 1);
+                        listData.splice(toIdx, 0, moved);
+                        window.AppState.updateSnapshot(step, listData);
+                        this.render();
+                    }
+                }
+                item.style.opacity = '1';
+            });
+        });
+    }
+}
+customElements.define('balance-list', BalanceList);
+
+// ----------------------------------------------
+// Компонент: финальная аналитика (шаг 5)
+// ----------------------------------------------
+class BalanceDashboard extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({ mode: 'open' });
+    }
+
+    connectedCallback() {
+        this.calculateMetrics();
+    }
+
+    calculateMetrics() {
+        const sn = window.AppState.snapshots;
+        const metrics = DEFAULT_SPHERES.map(name => {
+            const pNow = 10 - sn[1].indexOf(name);
+            const pWant = 10 - sn[2].indexOf(name);
+            const tNow = 10 - sn[3].indexOf(name);
+            const tWant = 10 - sn[4].indexOf(name);
+
+            const dP = pNow - pWant;
+            const dT = tNow - tWant;
+            const ird = dP * dT;
+
+            return { name, pNow, pWant, tNow, tWant, dP, dT, ird };
+        });
+
+        // Классификация
+        const violenceZone = metrics.filter(m => (m.tNow > m.tWant) && (m.pNow > m.pWant));
+        const sabotageZone = metrics.filter(m => 
+            ((m.tNow < m.tWant) && (m.pNow > m.pWant)) || 
+            (m.ird < 0 && !violenceZone.includes(m))
+        );
+        const healthyZone = metrics.filter(m => !violenceZone.includes(m) && !sabotageZone.includes(m));
+
+        this.render({ violenceZone, sabotageZone, healthyZone, allMetrics: metrics });
+    }
+
+    render({ violenceZone, sabotageZone, healthyZone, allMetrics }) {
+        this.shadowRoot.innerHTML = `
+            <style>
+                h2 { color: #1e293b; margin-bottom: 20px; }
+                .card { 
+                    padding: 16px; border-radius: 12px; margin-bottom: 16px; 
+                    border-left: 5px solid #ccc; background: #f8fafc;
+                }
+                .violence { border-left-color: #ef4444; background: #fef2f2; }
+                .sabotage { border-left-color: #f59e0b; background: #fffbeb; }
+                .healthy { border-left-color: #10b981; background: #f0fdf4; }
+                h3 { margin: 0 0 8px 0; font-size: 16px; display: flex; justify-content: space-between;}
+                p { margin: 0; font-size: 14px; color: #475569; line-height: 1.5; }
+                .sphere-tag { 
+                    display: inline-block; background: rgba(0,0,0,0.05); padding: 2px 8px; 
+                    border-radius: 4px; font-size: 13px; margin-top: 5px; font-weight: bold;
+                }
+                .advice { 
+                    margin-top: 20px; padding: 16px; background: #f1f5f9; border-radius: 10px; 
+                    font-size: 14px; color: #334155;
+                }
+                .summary { font-size: 14px; color: #475569; margin-top: 16px; line-height: 1.6; }
+                hr { border: none; border-top: 1px solid #e2e8f0; margin: 16px 0; }
+            </style>
+            <h2>🧠 Результаты 4D-диагностики</h2>
+            
+            <div class="card violence">
+                <h3>🔴 Зона насилия (скрытые грыжи)</h3>
+                <p>Вы тратите сюда больше сил и придаёте больший приоритет, чем хочется на самом деле. Эти сферы истощают общий ресурс:</p>
+                <div>
+                    ${violenceZone.length ? violenceZone.map(m => 
+                        `<span class="sphere-tag">${m.name} (ИРД: ${m.ird})</span>`
+                    ).join(' ') : '<i style="color:#64748b;">Чисто — насилия над собой не обнаружено</i>'}
+                </div>
+            </div>
+
+            <div class="card sabotage">
+                <h3>🟡 Зона напряжения и саботажа</h3>
+                <p>Высокие внутренние требования при нехватке реальных действий. Мысленная жвачка «надо бы» парализует практику:</p>
+                <div>
+                    ${sabotageZone.length ? sabotageZone.map(m => 
+                        `<span class="sphere-tag">${m.name}</span>`
+                    ).join(' ') : '<i style="color:#64748b;">Разрывов нет</i>'}
+                </div>
+            </div>
+
+            <div class="card healthy">
+                <h3>🟢 Системное здоровье</h3>
+                <p>Действия и ценности синхронизированы. Ресурс расходуется адекватно:</p>
+                <div>
+                    ${healthyZone.length ? healthyZone.map(m => 
+                        `<span class="sphere-tag">${m.name}</span>`
+                    ).join(' ') : '<i style="color:#64748b;">Пока ни одна сфера не находится в полном балансе</i>'}
+                </div>
+            </div>
+
+            <div class="advice">
+                💡 <b>Психологическая рекомендация:</b><br>
+                Если обнаружена «Зона насилия», первый шаг — не исправлять просевшие сферы, 
+                а сознательно снизить контроль и внутреннюю «важность» в зоне насилия. 
+                Высвобожденное мыслетопливо автоматически потечёт в практику и восстановление баланса.
+            </div>
+        `;
+    }
+}
+customElements.define('balance-dashboard', BalanceDashboard);
+
+// ----------------------------------------------
+// Корневой компонент SPA (навигация и рендеринг экранов)
+// ----------------------------------------------
+class AppRoot extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({ mode: 'open' });
+        window.addEventListener('state-changed', () => this.render());
+    }
+
+    connectedCallback() {
+        this.render();
+    }
+
+    render() {
+        const step = window.AppState.currentStep;
+        const title = (step < 5) ? window.AppState.titles[step] : 'Диагностика завершена';
+        
+        this.shadowRoot.innerHTML = `
+            <style>
+                .header { 
+                    font-size: 18px; font-weight: 600; color: #0f172a; 
+                    margin-bottom: 20px; text-align: center; 
+                }
+                .nav-bar { 
+                    display: flex; justify-content: space-between; margin-top: 25px; gap: 10px; 
+                }
+                button {
+                    padding: 12px 24px; border: none; border-radius: 8px; 
+                    font-weight: 600; cursor: pointer; transition: background 0.2s; 
+                    font-size: 14px;
+                }
+                .btn-primary { background: #3b82f6; color: white; }
+                .btn-primary:hover { background: #2563eb; }
+                .btn-secondary { background: #e2e8f0; color: #475569; }
+                .btn-secondary:hover { background: #cbd5e1; }
+                button:disabled { opacity: 0.5; cursor: not-allowed; }
+            </style>
+            <div class="header">${title}</div>
+            ${step < 5 ? `<balance-list step="${step}"></balance-list>` : `<balance-dashboard></balance-dashboard>`}
+            <div class="nav-bar">
+                <button class="btn-secondary" id="btn-home" ${step === 1 ? 'disabled' : ''}>🏠 Домой</button>
+                <button class="btn-secondary" id="btn-back" ${step === 1 ? 'disabled' : ''}>← Назад</button>
+                <button class="btn-primary" id="btn-next">
+                    ${step === 5 ? '🔄 Заново' : (step === 4 ? '📊 Показать результат' : 'Далее →')}
+                </button>
+            </div>
+        `;
+
+        this.setupNavigation();
+    }
+
+    setupNavigation() {
+        this.shadowRoot.querySelector('#btn-home').addEventListener('click', () => {
+            window.AppState.reset();
+        });
+        this.shadowRoot.querySelector('#btn-back').addEventListener('click', () => {
+            window.AppState.moveStep(-1);
+        });
+        this.shadowRoot.querySelector('#btn-next').addEventListener('click', () => {
+            if (window.AppState.currentStep === 5) {
+                window.AppState.reset();
+            } else {
+                window.AppState.moveStep(1);
+            }
+        });
+    }
+}
+customElements.define('app-root', AppRoot);
+</script>
+
+</body>
+</html>
