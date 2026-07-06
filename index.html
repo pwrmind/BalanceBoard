@@ -84,7 +84,7 @@ window.AppState = {
 };
 
 // ----------------------------------------------
-// Компонент: сортируемый список с линиями-индикаторами
+// Компонент: сортируемый список с интуитивными плашками
 // ----------------------------------------------
 class BalanceList extends HTMLElement {
     constructor() {
@@ -118,25 +118,75 @@ class BalanceList extends HTMLElement {
                 }
                 .item-wrapper {
                     position: relative;
-                    padding: 4px 0; /* невидимая буферная зона для дропа */
+                    padding: 6px 0; /* буферная зона для дропа */
                 }
                 .item { 
-                    padding: 14px; 
-                    background: #fff; 
-                    border: 2px solid #eef2f6; 
-                    border-radius: 10px; 
+                    padding: 16px; 
+                    background: #ffffff; 
+                    border: 1px solid #e2e8f0; 
+                    border-radius: 12px; 
                     cursor: grab; 
                     user-select: none;
-                    transition: background 0.2s, transform 0.1s;
+                    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02);
+                    transition: background-color 0.2s, box-shadow 0.2s, transform 0.1s;
                     display: flex; 
                     align-items: center; 
-                    font-weight: 500; 
-                    color: #334155;
+                    justify-content: space-between;
+                    color: #1e293b;
                 }
                 .item:active { cursor: grabbing; }
-                .item.dragging { opacity: 0.4; background: #f8fafc; }
+                .item:hover {
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+                    background-color: #fafafa;
+                }
+                .item.dragging { 
+                    opacity: 0.4; 
+                    background: #f8fafc; 
+                    box-shadow: none;
+                }
                 
-                /* Индикатор-линия строго между блоками */
+                /* Левая часть: прямоугольный бейдж + название */
+                .item-left {
+                    display: flex;
+                    align-items: center;
+                    gap: 14px;
+                }
+                
+                .badge { 
+                    background: #f1f5f9; 
+                    padding: 6px 10px;
+                    border-radius: 6px; 
+                    font-size: 13px; 
+                    font-weight: 600;
+                    color: #475569; 
+                    border: 1px solid #cbd5e1;
+                    min-width: 70px;
+                    text-align: center;
+                }
+                
+                .name {
+                    font-size: 15px;
+                    font-weight: 500;
+                }
+                
+                /* Правая часть: вертикальные точки (грип-маркер) */
+                .drag-handle {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 3px;
+                    padding: 4px;
+                }
+                .drag-handle span {
+                    width: 4px;
+                    height: 4px;
+                    background-color: #94a3b8;
+                    border-radius: 50%;
+                }
+                .item:hover .drag-handle span {
+                    background-color: #64748b;
+                }
+                
+                /* Линия-индикатор между блоками */
                 .drop-indicator {
                     position: absolute;
                     left: 0;
@@ -150,28 +200,22 @@ class BalanceList extends HTMLElement {
                 }
                 .item-wrapper.drag-before .drop-indicator.top { display: block; top: -2px; }
                 .item-wrapper.drag-after .drop-indicator.bottom { display: block; bottom: -2px; }
-                
-                .index { 
-                    background: #f1f5f9; 
-                    min-width: 28px; 
-                    height: 28px; 
-                    border-radius: 50%; 
-                    display: flex; 
-                    align-items: center; 
-                    justify-content: center; 
-                    font-size: 13px; 
-                    margin-right: 12px; 
-                    color: #64748b; 
-                    font-weight: bold;
-                }
             </style>
             <div class="list">
                 ${items.map((name, idx) => `
                     <div class="item-wrapper" data-index="${idx}">
                         <div class="drop-indicator top"></div>
                         <div class="item" draggable="true">
-                            <div class="index">${10 - idx}</div>
-                            <div class="name">${name}</div>
+                            <div class="item-left">
+                                <div class="badge">Баллов: ${10 - idx}</div>
+                                <div class="name">${name}</div>
+                            </div>
+                            <!-- Грип-маркер: 6 точек (2 колонки по 3) -->
+                            <div class="drag-handle">
+                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                                <div style="display:flex; gap:3px;"><span></span><span></span></div>
+                            </div>
                         </div>
                         <div class="drop-indicator bottom"></div>
                     </div>
@@ -185,7 +229,7 @@ class BalanceList extends HTMLElement {
     setupDragAndDrop() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
         let draggedIndex = null;
-        let dropPosition = null; // 'before' или 'after'
+        let dropPosition = null; 
 
         wrappers.forEach(wrapper => {
             const item = wrapper.querySelector('.item');
@@ -210,7 +254,6 @@ class BalanceList extends HTMLElement {
                 
                 this.clearIndicators();
 
-                // Если курсор в верхней половине — вставляем ДО, в нижней — ПОСЛЕ
                 if (offset < h / 2) {
                     wrapper.classList.add('drag-before');
                     dropPosition = 'before';
