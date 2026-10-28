@@ -3,11 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#6750A4">
     <title>Матрица Баланса</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons&display=swap" rel="stylesheet">
     <style>
         :root {
             --md-primary: #6750A4;
@@ -65,7 +66,9 @@
 </div>
 
 <script>
-// ---------- Константы ----------
+// ============================================================
+// Константы
+// ============================================================
 const DEFAULT_SPHERES = [
     'Здоровье и спорт',
     'Карьера и бизнес',
@@ -88,15 +91,41 @@ const SPHERE_DESCRIPTIONS = {
     'Окружающая среда (условия жизни)': 'Дом, комфорт, экология, место жительства.'
 };
 
-// ---------- Глобальное состояние ----------
+// Пороги GINS (откалиброваны под шкалу 0..392, где 392 — максимум напряжения).
+// ≤ 40 — ресурсное состояние, 41..150 — напряжение, > 150 — выгорание.
+const GINS_THRESHOLDS = { calm: 40, warn: 150 };
+
+const STORAGE_KEYS = {
+    history: 'balance_4d_history',
+    draft: 'balance_4d_draft'
+};
+const MAX_HISTORY = 50;
+
+// ============================================================
+// Утилиты
+// ============================================================
+const genId = () =>
+    (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : 'id-' + Date.now() + '-' + Math.random().toString(36).slice(2, 9);
+
+// Ранг сферы в списке (1 — верхний). Защита от -1.
+const rankOf = (list, name) => {
+    const i = list ? list.indexOf(name) : -1;
+    return i < 0 ? 1 : 10 - i;
+};
+
+// ============================================================
+// Глобальное состояние
+// ============================================================
 window.AppState = {
     currentStep: 0,
     snapshots: {
-        1: [...DEFAULT_SPHERES],
-        2: [...DEFAULT_SPHERES],
-        3: [...DEFAULT_SPHERES],
-        4: [...DEFAULT_SPHERES]
+        1: [...DEFAULT_SPHERES], 2: [...DEFAULT_SPHERES],
+        3: [...DEFAULT_SPHERES], 4: [...DEFAULT_SPHERES]
     },
+    touched: { 1: false, 2: false, 3: false, 4: false },
+    savedSessionId: null,
     titles: {
         1: "Приоритет: КАК СЕЙЧАС",
         2: "Приоритет: КАК ХОЧУ",
@@ -113,72 +142,172 @@ window.AppState = {
     calculateGINS(snapshots) {
         let total = 0;
         DEFAULT_SPHERES.forEach(name => {
-            const pNow = 10 - snapshots[1].indexOf(name);
-            const pWant = 10 - snapshots[2].indexOf(name);
-            const tNow = 10 - snapshots[3].indexOf(name);
-            const tWant = 10 - snapshots[4].indexOf(name);
+            const pNow = rankOf(snapshots[1], name);
+            const pWant = rankOf(snapshots[2], name);
+            const tNow = rankOf(snapshots[3], name);
+            const tWant = rankOf(snapshots[4], name);
             total += Math.abs((pNow - pWant) * (tNow - tWant));
         });
         return total;
     },
 
+    classifyGINS(gins) {
+        if (gins <= GINS_THRESHOLDS.calm) return { cls: 'green', label: 'Декомпрессия' };
+        if (gins <= GINS_THRESHOLDS.warn) return { cls: 'yellow', label: 'Напряжение' };
+        return { cls: 'red', label: 'Критическое выгорание' };
+    },
+
     moveStep(direction) {
         const next = this.currentStep + direction;
-        if (next >= 0 && next <= 6) {
-            if (direction === 1 && next >= 1 && next <= 4 &&
-                JSON.stringify(this.snapshots[next]) === JSON.stringify(DEFAULT_SPHERES)) {
-                this.snapshots[next] = [...this.snapshots[this.currentStep === 0 ? 1 : this.currentStep]];
-            }
-            this.currentStep = next;
-            window.dispatchEvent(new CustomEvent('state-changed'));
+        if (next < 0 || next > 6) return;
+
+        // Автоподстановка следующего шага из предыдущего, если шаг ещё не трогали.
+        // Это позволяет «донести» правки назад-вперёд, не теряя ручных изменений.
+        if (direction === 1 && next >= 1 && next <= 4 && !this.touched[next] &&
+            this.currentStep >= 1 && this.currentStep <= 4) {
+            this.snapshots[next] = [...this.snapshots[this.currentStep]];
         }
-    },
 
-    updateSnapshot(step, newList) { this.snapshots[step] = newList; },
-
-    getHistory() {
-        return JSON.parse(localStorage.getItem('balance_4d_history') || '[]');
-    },
-    saveCurrentSession() {
-        const history = this.getHistory();
-        history.unshift({
-            id: Date.now(),
-            date: new Date().toLocaleDateString('ru-RU', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }),
-            snapshots: JSON.parse(JSON.stringify(this.snapshots))
-        });
-        localStorage.setItem('balance_4d_history', JSON.stringify(history));
-    },
-    deleteSession(id) {
-        let history = this.getHistory().filter(s => s.id !== id);
-        localStorage.setItem('balance_4d_history', JSON.stringify(history));
+        this.currentStep = next;
+        this.saveDraft();
         window.dispatchEvent(new CustomEvent('state-changed'));
     },
+
+    updateSnapshot(step, newList) {
+        this.snapshots[step] = newList;
+        this.touched[step] = true;
+        this.saveDraft();
+    },
+
+    // ---------- История ----------
+    getHistory() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.history);
+            return raw ? JSON.parse(raw) : [];
+        } catch { return []; }
+    },
+
+    saveCurrentSession() {
+        const history = this.getHistory();
+        const now = new Date().toLocaleString('ru-RU', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+        const payload = JSON.parse(JSON.stringify(this.snapshots));
+
+        if (this.savedSessionId) {
+            const idx = history.findIndex(s => s.id === this.savedSessionId);
+            if (idx >= 0) {
+                history[idx] = { ...history[idx], date: now, snapshots: payload };
+            } else {
+                history.unshift({ id: this.savedSessionId, date: now, snapshots: payload });
+            }
+        } else {
+            const id = genId();
+            this.savedSessionId = id;
+            history.unshift({ id, date: now, snapshots: payload });
+        }
+
+        if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
+
+        try { localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history)); } catch {}
+        this.clearDraft();
+    },
+
+    deleteSession(id) {
+        const history = this.getHistory().filter(s => s.id !== id);
+        try { localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history)); } catch {}
+        if (this.savedSessionId === id) this.savedSessionId = null;
+        window.dispatchEvent(new CustomEvent('state-changed'));
+    },
+
+    // ---------- Черновик ----------
+    saveDraft() {
+        if (this.currentStep === 0) return;
+        try {
+            localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({
+                currentStep: this.currentStep,
+                snapshots: this.snapshots,
+                touched: this.touched,
+                savedSessionId: this.savedSessionId,
+                updatedAt: Date.now()
+            }));
+        } catch {}
+    },
+    getDraft() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEYS.draft);
+            return raw ? JSON.parse(raw) : null;
+        } catch { return null; }
+    },
+    clearDraft() {
+        try { localStorage.removeItem(STORAGE_KEYS.draft); } catch {}
+    },
+    restoreDraft() {
+        const draft = this.getDraft();
+        if (!draft || !draft.currentStep) return false;
+        this.currentStep = draft.currentStep;
+        this.snapshots = draft.snapshots;
+        this.touched = draft.touched || { 1: true, 2: true, 3: true, 4: true };
+        this.savedSessionId = draft.savedSessionId || null;
+        window.dispatchEvent(new CustomEvent('state-changed'));
+        return true;
+    },
+
+    // ---------- Сброс ----------
     reset() {
         this.currentStep = 0;
         this.snapshots = {
             1: [...DEFAULT_SPHERES], 2: [...DEFAULT_SPHERES],
             3: [...DEFAULT_SPHERES], 4: [...DEFAULT_SPHERES]
         };
+        this.touched = { 1: false, 2: false, 3: false, 4: false };
+        this.savedSessionId = null;
+        this.clearDraft();
         window.dispatchEvent(new CustomEvent('state-changed'));
     }
 };
 
-// ---------- Компонент: список сфер с иконкой "i" и тултипом ----------
+// ============================================================
+// Компонент: список сфер с тултипом, drag&drop, tap-to-reorder, keyboard
+// ============================================================
 class BalanceList extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
         this.draggedIndex = null;
-        this.touchDraggedItem = null;
-        this.touchStartY = 0;
         this.selectedIndex = null;
-        this.touchMoved = false;
+        this.touchDrag = null;
+        this._suppressClick = false;
+        this._focusAfter = null;
         this._tooltip = null;
+
+        // Привязка делегированных обработчиков
+        this._onTouchStart = this._onTouchStart.bind(this);
+        this._onTouchMove = this._onTouchMove.bind(this);
+        this._onTouchEnd = this._onTouchEnd.bind(this);
+        this._onClick = this._onClick.bind(this);
+        this._onKeyDown = this._onKeyDown.bind(this);
+        this._onDocClick = this._onDocClick.bind(this);
     }
 
-    connectedCallback() { this.render(); }
+    connectedCallback() {
+        this.shadowRoot.addEventListener('touchstart', this._onTouchStart, { passive: true });
+        this.shadowRoot.addEventListener('touchmove', this._onTouchMove, { passive: false });
+        this.shadowRoot.addEventListener('touchend', this._onTouchEnd);
+        this.shadowRoot.addEventListener('touchcancel', this._onTouchEnd);
+        this.shadowRoot.addEventListener('click', this._onClick);
+        this.shadowRoot.addEventListener('keydown', this._onKeyDown);
+        document.addEventListener('click', this._onDocClick);
+        this.render();
+    }
+
+    disconnectedCallback() {
+        document.removeEventListener('click', this._onDocClick);
+    }
+
     static get observedAttributes() { return ['step']; }
-    attributeChangedCallback() { this.render(); }
+    attributeChangedCallback() { if (this.isConnected) this.render(); }
 
     render() {
         const step = parseInt(this.getAttribute('step'));
@@ -187,14 +316,6 @@ class BalanceList extends HTMLElement {
             <style>
                 :host { display: block; width: 100%; position: relative; }
                 .container { display: grid; gap: 12px; margin: 16px 0; }
-                .scale { display: flex; flex-direction: column; gap: 8px; }
-                .static-badge {
-                    background: var(--md-surface-variant);
-                    color: var(--md-on-surface-variant);
-                    border-radius: 8px; font-size: 12px; font-weight: 700;
-                    min-width: 72px; height: 56px; display: flex; align-items: center;
-                    justify-content: center; box-sizing: border-box;
-                }
                 .list { display: flex; flex-direction: column; gap: 8px; position: relative; }
                 .item-wrapper { position: relative; height: 56px; }
                 .item {
@@ -202,8 +323,11 @@ class BalanceList extends HTMLElement {
                     border-radius: 12px; cursor: grab; user-select: none;
                     display: flex; align-items: center; gap: 8px;
                     color: var(--md-on-surface); height: 100%; box-sizing: border-box;
-                    touch-action: none; transition: background .2s, box-shadow .2s;
+                    touch-action: pan-y; /* вертикальный скролл разрешён */
+                    transition: background .2s, box-shadow .2s;
+                    outline: none;
                 }
+                .item:focus-visible { box-shadow: 0 0 0 3px rgba(103,80,164,0.35); }
                 .item:hover { background: rgba(103,80,164,0.04); }
                 .item.dragging { opacity: 0.4; background: var(--md-surface-variant); }
                 .item.selected {
@@ -214,10 +338,21 @@ class BalanceList extends HTMLElement {
                 .info-icon {
                     color: var(--md-on-surface-variant); cursor: pointer; font-size: 20px;
                     padding: 4px; border-radius: 50%; transition: background 0.2s;
-                    user-select: none; touch-action: none;
+                    user-select: none;
                 }
                 .info-icon:hover { background: rgba(103,80,164,0.08); }
-                .drag-handle { color: var(--md-on-surface-variant); cursor: grab; display: flex; align-items: center; }
+                .drag-handle {
+                    color: var(--md-on-surface-variant); cursor: grab;
+                    display: flex; align-items: center; justify-content: center;
+                    /* touch-action: none — блокируем скролл только на ручке */
+                    touch-action: none;
+                    padding: 4px 6px; margin-right: -6px; border-radius: 8px;
+                }
+                .drag-handle:hover { background: rgba(103,80,164,0.08); }
+                @media (max-width: 480px) {
+                    .name { font-size: 14px; }
+                    .drag-handle { padding: 8px 12px; margin-right: -12px; }
+                }
                 .material-icons { font-family: 'Material Icons'; font-size: 22px; }
                 .drop-indicator {
                     position: absolute; left: 0; right: 0; height: 4px;
@@ -227,7 +362,6 @@ class BalanceList extends HTMLElement {
                 .item-wrapper.drag-before .drop-indicator.top { display: block; top: -6px; }
                 .item-wrapper.drag-after .drop-indicator.bottom { display: block; bottom: -6px; }
 
-                /* Tooltip */
                 .tooltip {
                     position: absolute; z-index: 100;
                     background: var(--md-inverse-surface);
@@ -243,66 +377,140 @@ class BalanceList extends HTMLElement {
                     border-right: 6px solid transparent;
                     border-top: 6px solid var(--md-inverse-surface);
                 }
-                @media (max-width: 480px) {
-                    .static-badge { min-width: 60px; font-size: 11px; }
-                    .name { font-size: 14px; }
+                .sr-only {
+                    position: absolute; width: 1px; height: 1px; padding: 0;
+                    margin: -1px; overflow: hidden; clip: rect(0,0,0,0);
+                    white-space: nowrap; border: 0;
                 }
             </style>
             <div class="container">
-                <div class="list">
+                <div class="list" role="list" aria-label="Список сфер по приоритету">
                     ${items.map((name, idx) => `
                         <div class="item-wrapper" data-index="${idx}">
                             <div class="drop-indicator top"></div>
-                            <div class="item" draggable="true">
+                            <div class="item" draggable="true" tabindex="0" role="listitem"
+                                 aria-label="${name}, позиция ${idx + 1} из ${items.length}">
                                 <span class="name">${name}</span>
-                                <span class="info-icon material-icons" data-sphere="${name}">info</span>
-                                <span class="drag-handle material-icons">drag_indicator</span>
+                                <span class="info-icon material-icons" data-sphere="${name}"
+                                      role="button" tabindex="0"
+                                      aria-label="Описание сферы ${name}">info</span>
+                                <span class="drag-handle material-icons" aria-hidden="true">drag_indicator</span>
                             </div>
                             <div class="drop-indicator bottom"></div>
                         </div>
                     `).join('')}
                 </div>
+                <div class="sr-only" aria-live="polite" id="announce"></div>
             </div>
-            <div class="tooltip" id="tooltip"></div>
+            <div class="tooltip" id="tooltip" role="tooltip"></div>
         `;
 
         this._tooltip = this.shadowRoot.getElementById('tooltip');
-        this.setupDesktopDragAndDrop();
-        this.setupMobileTouchAndClick();
-        this.setupInfoTooltips();
+        this._announceEl = this.shadowRoot.getElementById('announce');
+        this.setupDesktopDnD();
+
+        if (this._focusAfter != null) {
+            const target = this.shadowRoot.querySelector(
+                `.item-wrapper[data-index="${this._focusAfter}"] .item`
+            );
+            target?.focus();
+            this._focusAfter = null;
+        }
     }
 
-    setupInfoTooltips() {
-        const icons = this.shadowRoot.querySelectorAll('.info-icon');
-        icons.forEach(icon => {
-            const sphereName = icon.dataset.sphere;
-            icon.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const desc = SPHERE_DESCRIPTIONS[sphereName] || '';
-                const rect = icon.getBoundingClientRect();
-                const hostRect = this.getBoundingClientRect();
-                const top = rect.top - hostRect.top - 10;
-                const left = rect.left - hostRect.left + rect.width / 2;
-                this._tooltip.textContent = desc;
-                this._tooltip.style.display = 'block';
-                this._tooltip.style.top = `${top - this._tooltip.offsetHeight}px`;
-                this._tooltip.style.left = `${left}px`;
-                this._tooltip.style.transform = 'translateX(-50%)';
-                const closeTooltip = (ev) => {
-                    if (!this._tooltip.contains(ev.target) && ev.target !== icon) {
-                        this._tooltip.style.display = 'none';
-                        document.removeEventListener('click', closeTooltip);
-                    }
-                };
-                setTimeout(() => document.addEventListener('click', closeTooltip), 0);
-            });
-            icon.addEventListener('mousedown', (e) => e.stopPropagation());
-            icon.addEventListener('touchstart', (e) => e.stopPropagation());
-        });
+    // ---------- Тултип (делегированный) ----------
+    _onClick(e) {
+        // Подавить клик после drag
+        if (this._suppressClick) {
+            this._suppressClick = false;
+            e.stopPropagation();
+            return;
+        }
+        const icon = e.target.closest('.info-icon');
+        if (icon) {
+            e.stopPropagation();
+            this.showTooltip(icon);
+            return;
+        }
+        // Клик по чему-то другому внутри — скрыть тултип
+        this.hideTooltip();
+
+        const item = e.target.closest('.item');
+        if (!item) return;
+        const wrapper = item.closest('.item-wrapper');
+        if (!wrapper) return;
+        const idx = parseInt(wrapper.dataset.index);
+
+        if (this.selectedIndex === null) {
+            this.selectedIndex = idx;
+            item.classList.add('selected');
+            this.announce(`${item.querySelector('.name').textContent}: выбрано. Выберите место для перемещения.`);
+        } else if (this.selectedIndex !== idx) {
+            this.draggedIndex = this.selectedIndex;
+            this.executeReorder(idx, 'before');
+            this.selectedIndex = null;
+            this.shadowRoot.querySelectorAll('.item').forEach(i => i.classList.remove('selected'));
+        } else {
+            this.selectedIndex = null;
+            item.classList.remove('selected');
+        }
     }
 
-    // ---------- Drag & Drop (Desktop) ----------
-    setupDesktopDragAndDrop() {
+    _onDocClick(e) {
+        if (!this._tooltip || this._tooltip.style.display !== 'block') return;
+        if (e.composedPath && e.composedPath().includes(this)) return;
+        this.hideTooltip();
+    }
+
+    showTooltip(icon) {
+        const desc = SPHERE_DESCRIPTIONS[icon.dataset.sphere] || '';
+        const rect = icon.getBoundingClientRect();
+        const hostRect = this.getBoundingClientRect();
+        const top = rect.top - hostRect.top - 10;
+        const left = rect.left - hostRect.left + rect.width / 2;
+        this._tooltip.textContent = desc;
+        this._tooltip.style.display = 'block';
+        this._tooltip.style.top = `${top - this._tooltip.offsetHeight}px`;
+        this._tooltip.style.left = `${left}px`;
+        this._tooltip.style.transform = 'translateX(-50%)';
+    }
+    hideTooltip() {
+        if (this._tooltip) this._tooltip.style.display = 'none';
+    }
+
+    announce(msg) {
+        if (!this._announceEl) return;
+        this._announceEl.textContent = '';
+        requestAnimationFrame(() => { this._announceEl.textContent = msg; });
+    }
+
+    // ---------- Клавиатура: Alt+↑/↓ ----------
+    _onKeyDown(e) {
+        const item = e.target.closest('.item');
+        if (!item) return;
+        if (!e.altKey) return;
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        e.preventDefault();
+
+        const step = parseInt(this.getAttribute('step'));
+        const wrapper = item.closest('.item-wrapper');
+        const idx = parseInt(wrapper.dataset.index);
+        const list = [...window.AppState.snapshots[step]];
+        const newIdx = e.key === 'ArrowUp'
+            ? Math.max(0, idx - 1)
+            : Math.min(list.length - 1, idx + 1);
+        if (newIdx === idx) return;
+
+        const [moved] = list.splice(idx, 1);
+        list.splice(newIdx, 0, moved);
+        this._focusAfter = newIdx;
+        window.AppState.updateSnapshot(step, list);
+        this.render();
+        this.announce(`${moved} перемещён на позицию ${newIdx + 1} из ${list.length}.`);
+    }
+
+    // ---------- Desktop DnD ----------
+    setupDesktopDnD() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
         let dropPosition = null;
         wrappers.forEach(wrapper => {
@@ -311,19 +519,23 @@ class BalanceList extends HTMLElement {
                 this.draggedIndex = parseInt(wrapper.dataset.index);
                 item.classList.add('dragging');
                 e.dataTransfer.effectAllowed = 'move';
+                try { e.dataTransfer.setData('text/plain', String(this.draggedIndex)); } catch {}
             });
             item.addEventListener('dragend', () => {
                 item.classList.remove('dragging');
                 this.clearIndicators();
+                this.draggedIndex = null;
             });
             wrapper.addEventListener('dragover', (e) => {
                 e.preventDefault();
                 const rect = wrapper.getBoundingClientRect();
                 this.clearIndicators();
-                if ((e.clientY - rect.top) < rect.height/2) {
-                    wrapper.classList.add('drag-before'); dropPosition = 'before';
+                if ((e.clientY - rect.top) < rect.height / 2) {
+                    wrapper.classList.add('drag-before');
+                    dropPosition = 'before';
                 } else {
-                    wrapper.classList.add('drag-after'); dropPosition = 'after';
+                    wrapper.classList.add('drag-after');
+                    dropPosition = 'after';
                 }
             });
             wrapper.addEventListener('dragleave', () => this.clearIndicators());
@@ -334,73 +546,84 @@ class BalanceList extends HTMLElement {
         });
     }
 
-    // ---------- Touch & Click ----------
-    setupMobileTouchAndClick() {
-        const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
-        let dropPosition = null, lastTargetWrapper = null;
-        wrappers.forEach(wrapper => {
-            const item = wrapper.querySelector('.item');
-            item.addEventListener('click', (e) => {
-                // Игнорируем, если клик был по иконке (уже обработан)
-                if (e.target.classList.contains('info-icon')) return;
-                if (this.touchMoved) { this.touchMoved = false; return; }
-                const idx = parseInt(wrapper.dataset.index);
-                if (this.selectedIndex === null) {
-                    this.selectedIndex = idx; item.classList.add('selected');
-                } else {
-                    if (this.selectedIndex !== idx) {
-                        this.draggedIndex = this.selectedIndex;
-                        this.executeReorder(idx, 'before');
-                    }
-                    this.selectedIndex = null;
-                    this.shadowRoot.querySelectorAll('.item').forEach(i => i.classList.remove('selected'));
-                }
-            });
-            item.addEventListener('touchstart', (e) => {
-                this.draggedIndex = parseInt(wrapper.dataset.index);
-                this.touchDraggedItem = item;
-                this.touchStartY = e.touches[0].clientY;
-                this.touchMoved = false;
-                item.style.position = 'relative'; item.style.zIndex = '100';
-            });
-            item.addEventListener('touchmove', (e) => {
-                if (!this.touchDraggedItem) return;
-                this.touchMoved = true;
-                const currentY = e.touches[0].clientY;
-                this.touchDraggedItem.style.transform = `translateY(${currentY - this.touchStartY}px)`;
-                this.touchDraggedItem.style.pointerEvents = 'none';
-                this.clearIndicators();
-                const targetEl = this.shadowRoot.elementFromPoint(e.touches[0].clientX, currentY);
-                this.touchDraggedItem.style.pointerEvents = '';
-                const curW = targetEl?.closest('.item-wrapper');
-                if (curW) {
-                    lastTargetWrapper = curW;
-                    const rect = curW.getBoundingClientRect();
-                    if ((currentY - rect.top) < rect.height/2) {
-                        curW.classList.add('drag-before'); dropPosition = 'before';
-                    } else {
-                        curW.classList.add('drag-after'); dropPosition = 'after';
-                    }
-                }
-            });
-            item.addEventListener('touchend', () => {
-                if (!this.touchDraggedItem) return;
-                this.touchDraggedItem.style.transform = '';
-                this.touchDraggedItem.style.position = '';
-                this.touchDraggedItem.style.zIndex = '';
-                this.clearIndicators();
-                if (lastTargetWrapper && this.draggedIndex !== null && this.touchMoved) {
-                    this.executeReorder(parseInt(lastTargetWrapper.dataset.index), dropPosition);
-                }
-                this.touchDraggedItem = null;
-                this.draggedIndex = null;
-                lastTargetWrapper = null;
-            });
-        });
+    // ---------- Mobile: drag только за ручку ----------
+    _onTouchStart(e) {
+        const handle = e.target.closest('.drag-handle');
+        if (!handle) return;
+        e.stopPropagation();
+        const touch = e.touches[0];
+        const wrapper = handle.closest('.item-wrapper');
+        this.touchDrag = {
+            index: parseInt(wrapper.dataset.index),
+            wrapper,
+            item: wrapper.querySelector('.item'),
+            startY: touch.clientY,
+            lastTarget: null,
+            position: null,
+            moved: false
+        };
     }
 
+    _onTouchMove(e) {
+        if (!this.touchDrag) return;
+        e.preventDefault();
+        const touch = e.touches[0];
+        const dy = touch.clientY - this.touchDrag.startY;
+        if (!this.touchDrag.moved && Math.abs(dy) < 6) return;
+        this.touchDrag.moved = true;
+
+        const { item, wrapper } = this.touchDrag;
+        item.style.transform = `translateY(${dy}px)`;
+        item.style.zIndex = '100';
+        item.style.position = 'relative';
+        item.classList.add('dragging');
+
+        // Найти элемент под пальцем
+        item.style.pointerEvents = 'none';
+        const el = this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY);
+        item.style.pointerEvents = '';
+
+        this.clearIndicators();
+        if (el) {
+            const target = el.closest('.item-wrapper');
+            if (target && target !== wrapper) {
+                const rect = target.getBoundingClientRect();
+                const pos = (touch.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
+                target.classList.add(pos === 'before' ? 'drag-before' : 'drag-after');
+                this.touchDrag.lastTarget = target;
+                this.touchDrag.position = pos;
+            }
+        }
+    }
+
+    _onTouchEnd() {
+        if (!this.touchDrag) return;
+        const { item, lastTarget, position, index, moved } = this.touchDrag;
+
+        item.style.transform = '';
+        item.style.zIndex = '';
+        item.style.position = '';
+        item.classList.remove('dragging');
+        this.clearIndicators();
+
+        if (moved) {
+            this._suppressClick = true;
+            setTimeout(() => { this._suppressClick = false; }, 80);
+            if (lastTarget) {
+                this.draggedIndex = index;
+                this.executeReorder(parseInt(lastTarget.dataset.index), position);
+            }
+        }
+        this.touchDrag = null;
+    }
+
+    // ---------- Перестановка ----------
     executeReorder(targetIndex, position) {
-        if (this.draggedIndex === null || this.draggedIndex === targetIndex) return;
+        if (this.draggedIndex === null) return;
+        if (this.draggedIndex === targetIndex) {
+            this.draggedIndex = null;
+            return;
+        }
         const step = parseInt(this.getAttribute('step'));
         const list = [...window.AppState.snapshots[step]];
         const [moved] = list.splice(this.draggedIndex, 1);
@@ -408,185 +631,316 @@ class BalanceList extends HTMLElement {
         if (position === 'after' && this.draggedIndex > targetIndex) newIdx = targetIndex + 1;
         else if (position === 'before' && this.draggedIndex < targetIndex) newIdx = targetIndex - 1;
         if (newIdx < 0) newIdx = 0;
+        if (newIdx > list.length) newIdx = list.length;
         list.splice(newIdx, 0, moved);
+
+        this._focusAfter = newIdx;
         window.AppState.updateSnapshot(step, list);
         this.render();
+        this.announce(`${moved} перемещён на позицию ${newIdx + 1} из ${list.length}.`);
         this.draggedIndex = null;
     }
 
     clearIndicators() {
-        this.shadowRoot.querySelectorAll('.item-wrapper').forEach(w => w.classList.remove('drag-before','drag-after'));
+        this.shadowRoot.querySelectorAll('.item-wrapper')
+            .forEach(w => w.classList.remove('drag-before', 'drag-after'));
     }
 }
 customElements.define('balance-list', BalanceList);
 
-// ---------- Компонент: аналитика (шаг 5) ----------
+// ============================================================
+// Компонент: аналитика (шаг 5)
+// ============================================================
 class BalanceDashboard extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
+        this._handler = () => this.render();
     }
-    connectedCallback() { this.calculateMetrics(); }
-    calculateMetrics() {
+    connectedCallback() {
+        window.addEventListener('state-changed', this._handler);
+        this.render();
+    }
+    disconnectedCallback() {
+        window.removeEventListener('state-changed', this._handler);
+    }
+
+    computeMetrics() {
         const sn = window.AppState.snapshots;
-        const metrics = DEFAULT_SPHERES.map(name => {
-            const pN = 10 - sn[1].indexOf(name), pW = 10 - sn[2].indexOf(name);
-            const tN = 10 - sn[3].indexOf(name), tW = 10 - sn[4].indexOf(name);
-            return { name, pN, pW, tN, tW, ird: (pN-pW)*(tN-tW) };
+        return DEFAULT_SPHERES.map(name => {
+            const pN = rankOf(sn[1], name), pW = rankOf(sn[2], name);
+            const tN = rankOf(sn[3], name), tW = rankOf(sn[4], name);
+            return { name, pN, pW, tN, tW, ird: (pN - pW) * (tN - tW) };
         });
-        const v = metrics.filter(m => m.tN > m.tW && m.pN > m.pW);
-        const s = metrics.filter(m => (m.ird < 0) || (m.tN < m.tW && m.pN > m.pW));
-        const h = metrics.filter(m => !v.includes(m) && !s.includes(m));
-        this.render(v,s,h);
     }
-    render(v,s,h) {
-        const ins = {
-            v: "Психика использует эту сферу как «кредитную карту» — вы берете отсюда энергию в долг, чтобы заглушить тревогу.",
-            s: "Внутренний конфликт: сфера важна, но мозг блокирует действия, боясь неудачи."
-        };
+
+    render() {
+        const metrics = this.computeMetrics();
+        const gins = metrics.reduce((s, m) => s + Math.abs(m.ird), 0);
+        const status = window.AppState.classifyGINS(gins);
+
+        // Зоны
+        const violence = metrics.filter(m => m.tN > m.tW && m.pN > m.pW);
+        const sabotage = metrics.filter(m => m.ird < 0 && !violence.includes(m));
+        const health = metrics.filter(m => !violence.includes(m) && !sabotage.includes(m));
+
+        const insV = "Психика использует эту сферу как «кредитную карту» — вы берёте здесь энергию в долг, чтобы заглушить тревогу.";
+        const insS = "Внутренний конфликт: сфера важна, но мозг блокирует действия, боясь неудачи.";
+
         this.shadowRoot.innerHTML = `
             <style>
                 :host { display: block; }
-                h2 { font-size: 1.3rem; font-weight: 500; margin-bottom: 16px; }
+                h2 { font-size: 1.3rem; font-weight: 500; margin: 0 0 12px; }
+                .gins-card {
+                    padding: 16px; border-radius: 16px; margin-bottom: 16px;
+                    display: flex; justify-content: space-between; align-items: center;
+                }
+                .gins-card.green { background: var(--md-success-container); color: var(--md-on-success-container); }
+                .gins-card.yellow { background: var(--md-warning-container); color: var(--md-on-warning-container); }
+                .gins-card.red { background: var(--md-error-container); color: var(--md-on-error-container); }
+                .gins-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; opacity: .8; }
+                .gins-val { font-size: 2rem; font-weight: 700; line-height: 1.1; }
+                .gins-status { font-size: 14px; }
                 .card { padding: 16px; border-radius: 16px; margin-bottom: 16px; }
                 .v { background: var(--md-error-container); color: var(--md-on-error-container); }
                 .s { background: var(--md-warning-container); color: var(--md-on-warning-container); }
                 .h { background: var(--md-success-container); color: var(--md-on-success-container); }
                 .title { font-weight: 700; margin-bottom: 8px; }
                 .chip { display: inline-block; background: rgba(0,0,0,0.08); padding: 4px 10px; border-radius: 8px; margin: 3px; font-size: 13px; }
-                .insight { font-style: italic; margin: 8px 0; font-size: 14px; }
-                ul { margin: 0; padding-left: 20px; }
-                li { margin-bottom: 6px; }
-                .mvp { background: rgba(255,255,255,0.7); border-radius: 8px; padding: 8px; margin-top: 8px; font-size: 13px; }
+                .insight { font-style: italic; margin: 10px 0 6px; font-size: 14px; }
+                ul { margin: 0 0 8px; padding-left: 20px; }
+                li { margin-bottom: 4px; font-size: 14px; }
+                .mvp { background: rgba(255,255,255,0.65); border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-top: 6px; }
+                .empty { font-size: 14px; opacity: .75; }
             </style>
             <h2>🎯 Результаты диагностики</h2>
-            <div class="card v"><div class="title">🔴 Зона насилия</div>
-                ${v.length ? v.map(m=>`<span class="chip">${m.name} (ИРД: +${m.ird})</span>`).join('') : 'Отсутствует.'}
-                ${v.map(m => `<div class="insight">${ins.v}</div><ul><li>Что заставляет удерживать высокую важность?</li><li>Как снизить контроль на 10%?</li></ul><div class="mvp">🏃 Эксперимент: уменьшить время на контроль на 10%.</div>`).join('')}
+            <div class="gins-card ${status.cls}">
+                <div>
+                    <div class="gins-label">Глобальный индекс напряжения</div>
+                    <div class="gins-status">${status.label}</div>
+                </div>
+                <div class="gins-val">${gins}</div>
             </div>
-            <div class="card s"><div class="title">🟡 Зона саботажа</div>
-                ${s.length ? s.map(m=>`<span class="chip">${m.name}</span>`).join('') : 'Отсутствует.'}
-                ${s.map(m => `<div class="insight">${ins.s}</div><ul><li>Какая мысль возникает перед действием?</li><li>Какое неидеальное действие можно сделать сегодня?</li></ul><div class="mvp">🛠 Сделайте сверхмалый шаг прямо сейчас.</div>`).join('')}
+
+            <div class="card v">
+                <div class="title">🔴 Зона насилия</div>
+                ${violence.length
+                    ? violence.map(m => `<span class="chip">${m.name} (ИРД: +${m.ird})</span>`).join('')
+                      + `<div class="insight">${insV}</div>
+                         <ul>
+                             <li>Что заставляет удерживать высокую важность?</li>
+                             <li>Как снизить контроль на 10%?</li>
+                         </ul>
+                         <div class="mvp">🏃 Эксперимент: уменьшить время на контроль на 10%.</div>`
+                    : `<div class="empty">Отсутствует.</div>`}
             </div>
-            <div class="card h"><div class="title">🟢 Системное здоровье</div>
-                ${h.length ? h.map(m=>`<span class="chip">${m.name}</span>`).join('') : 'Пока нет сбалансированных сфер.'}
+
+            <div class="card s">
+                <div class="title">🟡 Зона саботажа</div>
+                ${sabotage.length
+                    ? sabotage.map(m => `<span class="chip">${m.name}</span>`).join('')
+                      + `<div class="insight">${insS}</div>
+                         <ul>
+                             <li>Какая мысль возникает перед действием?</li>
+                             <li>Какое неидеальное действие можно сделать сегодня?</li>
+                         </ul>
+                         <div class="mvp">🛠 Сделайте сверхмалый шаг прямо сейчас.</div>`
+                    : `<div class="empty">Отсутствует.</div>`}
+            </div>
+
+            <div class="card h">
+                <div class="title">🟢 Системное здоровье</div>
+                ${health.length
+                    ? health.map(m => `<span class="chip">${m.name}</span>`).join('')
+                    : `<div class="empty">Пока нет сбалансированных сфер.</div>`}
             </div>
         `;
     }
 }
 customElements.define('balance-dashboard', BalanceDashboard);
 
-// ---------- Компонент: история сравнения (шаг 6) ----------
+// ============================================================
+// Компонент: история сравнения (шаг 6)
+// ============================================================
 class BalanceHistory extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
-        this.selectedId = null;
+        this.selectedAfter = null;
+        this.selectedBefore = null;
+        this._handler = () => this.render();
     }
-    connectedCallback() { this.render(); }
+    connectedCallback() {
+        window.addEventListener('state-changed', this._handler);
+        this.render();
+    }
+    disconnectedCallback() {
+        window.removeEventListener('state-changed', this._handler);
+    }
+
     getMetrics(sn) {
-        return DEFAULT_SPHERES.map(name => ({
-            name,
-            ird: (10-sn[1].indexOf(name) - (10-sn[2].indexOf(name))) * ((10-sn[3].indexOf(name)) - (10-sn[4].indexOf(name)))
-        }));
+        return DEFAULT_SPHERES.map(name => {
+            const pN = rankOf(sn[1], name), pW = rankOf(sn[2], name);
+            const tN = rankOf(sn[3], name), tW = rankOf(sn[4], name);
+            return { name, ird: (pN - pW) * (tN - tW) };
+        });
     }
+
     render() {
         const hist = window.AppState.getHistory();
         if (!hist.length) {
-            this.shadowRoot.innerHTML = `<div style="text-align:center; padding:40px;">История пуста.</div>`;
+            this.shadowRoot.innerHTML = `
+                <style>:host{display:block;} .empty{padding:40px 0;text-align:center;color:var(--md-on-surface-variant);}</style>
+                <div class="empty">История пуста.</div>
+            `;
             return;
         }
-        if (!this.selectedId) this.selectedId = hist[0].id;
-        const cur = this.getMetrics(window.AppState.snapshots);
-        const pastSes = hist.find(s => s.id === this.selectedId) || hist[0];
-        const past = this.getMetrics(pastSes.snapshots);
+
+        // Нормализуем выбор
+        const findById = (id) => hist.find(s => s.id === id);
+        let after  = findById(this.selectedAfter)  || hist[0];
+        let before = findById(this.selectedBefore) || hist[1] || hist[0];
+        this.selectedAfter  = after.id;
+        this.selectedBefore = before.id;
+
+        const isSingle = hist.length === 1;
+        const cur  = this.getMetrics(after.snapshots);
+        const prev = this.getMetrics(before.snapshots);
+
+        const option = (s) => `<option value="${s.id}" ${s.id === this.selectedAfter ? 'selected' : ''}>${s.date} · ГИН ${window.AppState.calculateGINS(s.snapshots)}</option>`;
+        const optionB = (s) => `<option value="${s.id}" ${s.id === this.selectedBefore ? 'selected' : ''}>${s.date} · ГИН ${window.AppState.calculateGINS(s.snapshots)}</option>`;
+
         this.shadowRoot.innerHTML = `
             <style>
                 :host { display: block; }
-                h2 { font-size: 1.2rem; margin-bottom: 12px; }
-                .select-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-                select { flex:1; padding: 8px; border-radius: 8px; border: 1px solid var(--md-outline); }
-                button { background: none; border: none; color: var(--md-error); text-decoration: underline; cursor: pointer; }
-                table { width: 100%; border-collapse: collapse; }
-                th, td { padding: 8px; border-bottom: 1px solid var(--md-surface-variant); text-align: left; }
-                .trend { font-weight: bold; padding: 2px 6px; border-radius: 4px; }
+                h2 { font-size: 1.2rem; margin: 0 0 12px; }
+                .select-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 16px; }
+                .select-row label { font-size: 13px; color: var(--md-on-surface-variant); }
+                select { flex: 1 1 200px; min-width: 160px; padding: 8px; border-radius: 8px; border: 1px solid var(--md-outline); background: #fff; font: inherit; }
+                button { background: none; border: none; color: var(--md-error); text-decoration: underline; cursor: pointer; padding: 4px; font: inherit; }
+                button:hover { opacity: .8; }
+                table { width: 100%; border-collapse: collapse; font-size: 14px; }
+                thead th { text-align: left; padding: 8px; border-bottom: 2px solid var(--md-surface-variant); color: var(--md-on-surface-variant); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+                tbody td { padding: 8px; border-bottom: 1px solid var(--md-surface-variant); }
+                .trend { font-weight: 600; padding: 2px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
                 .up { background: #C6F2D4; color: #146C36; }
                 .down { background: #F9DEDC; color: #B3261E; }
+                .same { background: var(--md-surface-variant); color: var(--md-on-surface-variant); }
+                .empty { padding: 20px 0; text-align: center; color: var(--md-on-surface-variant); }
             </style>
             <h2>📜 Сравнение истории</h2>
-            <div class="select-row">
-                <select id="sel">${hist.map(s => `<option value="${s.id}" ${s.id===this.selectedId?'selected':''}>${s.date}</option>`).join('')}</select>
-                <button id="del">Удалить</button>
-            </div>
+            ${isSingle
+                ? `<div class="empty">Сохранена одна сессия. Сделайте ещё одну диагностику, чтобы увидеть динамику.</div>`
+                : `<div class="select-row">
+                      <label>Было:</label>
+                      <select id="sel-before">${hist.map(optionB).join('')}</select>
+                      <label>Стало:</label>
+                      <select id="sel-after">${hist.map(option).join('')}</select>
+                   </div>`}
             <table>
-                <tr><th>Сфера</th><th>Было</th><th>Стало</th><th>Тренд</th></tr>
-                ${cur.map((c,i) => {
-                    const p = past[i]?.ird || 0;
-                    const d = c.ird - p;
-                    let cls = '', txt = '—';
-                    if (d>0) { cls='down'; txt=`+${d} 🔺`; }
-                    else if (d<0) { cls='up'; txt=`${d} 🔻`; }
-                    return `<tr><td>${c.name}</td><td>${p>=0?'+':''}${p}</td><td>${c.ird>=0?'+':''}${c.ird}</td><td><span class="trend ${cls}">${txt}</span></td></tr>`;
-                }).join('')}
+                <thead>
+                    <tr><th>Сфера</th>${isSingle ? '<th>ИРД</th>' : '<th>Было</th><th>Стало</th><th>Тренд</th>'}</tr>
+                </thead>
+                <tbody>
+                    ${cur.map((c, i) => {
+                        if (isSingle) {
+                            return `<tr><td>${c.name}</td><td>${c.ird >= 0 ? '+' : ''}${c.ird}</td></tr>`;
+                        }
+                        const p = prev[i]?.ird ?? 0;
+                        const d = c.ird - p;
+                        let cls = 'same', txt = '—';
+                        if (d > 0) { cls = 'down'; txt = `+${d} 🔺`; }
+                        else if (d < 0) { cls = 'up'; txt = `${d} 🔻`; }
+                        return `<tr>
+                            <td>${c.name}</td>
+                            <td>${p >= 0 ? '+' : ''}${p}</td>
+                            <td>${c.ird >= 0 ? '+' : ''}${c.ird}</td>
+                            <td><span class="trend ${cls}">${txt}</span></td>
+                        </tr>`;
+                    }).join('')}
+                </tbody>
             </table>
+            <div class="select-row" style="margin-top:16px;">
+                <button id="del-after">Удалить «${after.date}»</button>
+            </div>
         `;
-        this.shadowRoot.querySelector('#sel').addEventListener('change', e => {
-            this.selectedId = +e.target.value;
-            this.render();
-        });
-        this.shadowRoot.querySelector('#del').addEventListener('click', () => {
-            if (confirm('Удалить запись?')) {
-                window.AppState.deleteSession(this.selectedId);
-                this.selectedId = null;
+
+        if (!isSingle) {
+            this.shadowRoot.querySelector('#sel-before').addEventListener('change', (e) => {
+                this.selectedBefore = e.target.value;
                 this.render();
-            }
+            });
+            this.shadowRoot.querySelector('#sel-after').addEventListener('change', (e) => {
+                this.selectedAfter = e.target.value;
+                this.render();
+            });
+        }
+        this.shadowRoot.querySelector('#del-after').addEventListener('click', () => {
+            if (!confirm(`Удалить запись «${after.date}»?`)) return;
+            window.AppState.deleteSession(after.id);
+            this.selectedAfter = null;
+            this.selectedBefore = null;
+            this.render();
         });
     }
 }
 customElements.define('balance-history', BalanceHistory);
 
-// ---------- Корневой компонент: главный экран + навигация ----------
+// ============================================================
+// Корневой компонент
+// ============================================================
 class AppRoot extends HTMLElement {
     constructor() {
         super();
         this.attachShadow({ mode: 'open' });
-        window.addEventListener('state-changed', () => this.render());
+        this._handler = () => this.render();
     }
-    connectedCallback() { this.render(); }
+    connectedCallback() {
+        window.addEventListener('state-changed', this._handler);
+        this.render();
+    }
+    disconnectedCallback() {
+        window.removeEventListener('state-changed', this._handler);
+    }
 
     render() {
         const step = window.AppState.currentStep;
         if (step === 0) return this.renderHome();
 
-        const title = step<5 ? window.AppState.titles[step] : (step===5 ? 'Результаты' : 'История');
-        const sub = step<5 ? window.AppState.subtitles[step] : '';
+        const title = step < 5 ? window.AppState.titles[step] : (step === 5 ? 'Результаты' : 'История');
+        const sub = step < 5 ? window.AppState.subtitles[step] : '';
         this.shadowRoot.innerHTML = `
             <style>
                 .header { margin-bottom: 8px; }
                 .title { font-size: 1.2rem; font-weight: 500; }
                 .sub { font-size: 0.9rem; color: var(--md-on-surface-variant); margin-bottom: 8px; }
-                .nav { display: flex; justify-content: space-between; margin-top: 20px; gap: 8px; }
+                .nav { display: flex; justify-content: space-between; margin-top: 20px; gap: 8px; flex-wrap: wrap; }
+                .nav-spacer { flex: 1 1 auto; }
                 button {
-                    border: none; border-radius: 20px; padding: 10px 24px;
+                    border: none; border-radius: 20px; padding: 10px 20px;
                     font-weight: 600; font-size: 14px; cursor: pointer;
-                    transition: background .2s; letter-spacing: 0.5px;
+                    transition: background .2s, opacity .2s; letter-spacing: 0.3px;
+                    font-family: inherit;
                 }
                 .btn-outlined { background: transparent; border: 1px solid var(--md-outline); color: var(--md-primary); }
+                .btn-outlined:hover:not(:disabled) { background: rgba(103,80,164,0.06); }
                 .btn-filled { background: var(--md-primary); color: var(--md-on-primary); }
-                button:disabled { opacity: 0.5; }
+                .btn-filled:hover:not(:disabled) { opacity: .9; }
+                button:disabled { opacity: 0.4; cursor: not-allowed; }
             </style>
             <div class="header">
                 <div class="title">${title}</div>
                 <div class="sub">${sub}</div>
             </div>
-            ${step<5 ? `<balance-list step="${step}"></balance-list>` : ''}
-            ${step===5 ? '<balance-dashboard></balance-dashboard>' : ''}
-            ${step===6 ? '<balance-history></balance-history>' : ''}
+            ${step < 5 ? `<balance-list step="${step}"></balance-list>` : ''}
+            ${step === 5 ? '<balance-dashboard></balance-dashboard>' : ''}
+            ${step === 6 ? '<balance-history></balance-history>' : ''}
             <div class="nav">
                 <button class="btn-outlined" id="home-btn">🏠 Меню</button>
-                <button class="btn-outlined" id="back-btn" ${step===1?'disabled':''}>← Назад</button>
+                <span class="nav-spacer"></span>
+                <button class="btn-outlined" id="back-btn" ${step === 1 ? 'disabled' : ''}>← Назад</button>
                 <button class="btn-filled" id="next-btn">
-                    ${step===4 ? '📊 Результат' : step===5 ? '💾 Сохранить' : step===6 ? '🔄 Заново' : 'Далее →'}
+                    ${step === 4 ? '📊 Результат' : step === 5 ? (window.AppState.savedSessionId ? '💾 Обновить' : '💾 Сохранить') : step === 6 ? '🔄 Заново' : 'Далее →'}
                 </button>
             </div>
         `;
@@ -595,42 +949,50 @@ class AppRoot extends HTMLElement {
 
     renderHome() {
         const hist = window.AppState.getHistory();
-        let gins = '--', status = 'Не откалибровано', cls = 'empty', trend='';
+        const draft = window.AppState.getDraft();
+        let gins = '--', status = 'Не откалибровано', cls = 'empty', trend = '';
         if (hist.length) {
             const curGins = window.AppState.calculateGINS(hist[0].snapshots);
             gins = curGins;
-            if (curGins<=15) { cls='green'; status='Декомпрессия'; }
-            else if (curGins<=45) { cls='yellow'; status='Напряжение'; }
-            else { cls='red'; status='Критическое выгорание'; }
-            if (hist.length>1) {
+            const st = window.AppState.classifyGINS(curGins);
+            cls = st.cls;
+            status = st.label;
+            if (hist.length > 1) {
                 const prev = window.AppState.calculateGINS(hist[1].snapshots);
                 const diff = curGins - prev;
-                if (diff<0) trend = `📉 Снижение на ${Math.abs(diff)} б.`;
-                else if (diff>0) trend = `🔺 Рост на ${diff} б.`;
+                if (diff < 0) trend = `📉 Снижение на ${Math.abs(diff)} б.`;
+                else if (diff > 0) trend = `🔺 Рост на ${diff} б.`;
                 else trend = '⚖️ Без изменений';
             }
         }
+        const hasDraft = draft && draft.currentStep > 0;
         this.shadowRoot.innerHTML = `
             <style>
                 .home { text-align: center; }
-                h1 { font-size: 1.5rem; font-weight: 500; }
+                h1 { font-size: 1.5rem; font-weight: 500; margin: 8px 0 0; }
                 .gins-card {
                     margin: 20px 0; padding: 24px; border-radius: 24px;
                     background: var(--md-surface); border: 1px solid var(--md-surface-variant);
                 }
-                .gins-card.green { background: var(--md-success-container); color: var(--md-on-success-container); }
-                .gins-card.yellow { background: var(--md-warning-container); color: var(--md-on-warning-container); }
-                .gins-card.red { background: var(--md-error-container); color: var(--md-on-error-container); }
-                .gins-val { font-size: 3rem; font-weight: 700; }
-                .gins-lab { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }
-                .trend { margin: 8px 0; font-size: 0.9rem; }
+                .gins-card.green { background: var(--md-success-container); color: var(--md-on-success-container); border-color: transparent; }
+                .gins-card.yellow { background: var(--md-warning-container); color: var(--md-on-warning-container); border-color: transparent; }
+                .gins-card.red { background: var(--md-error-container); color: var(--md-on-error-container); border-color: transparent; }
+                .gins-card.empty { color: var(--md-on-surface-variant); }
+                .gins-val { font-size: 3rem; font-weight: 700; line-height: 1.1; }
+                .gins-lab { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 1px; opacity: .8; }
+                .trend { margin: 8px 0 0; font-size: 0.9rem; }
                 .actions { display: flex; flex-direction: column; gap: 12px; margin-top: 20px; }
-                button {
+                .actions button {
                     border: none; border-radius: 20px; padding: 14px;
                     font-weight: 600; font-size: 15px; cursor: pointer;
+                    font-family: inherit;
                 }
                 .btn-filled { background: var(--md-primary); color: var(--md-on-primary); }
+                .btn-filled:hover { opacity: .9; }
                 .btn-outlined { background: transparent; border: 1px solid var(--md-outline); color: var(--md-primary); }
+                .btn-outlined:hover:not(:disabled) { background: rgba(103,80,164,0.06); }
+                .btn-outlined:disabled { opacity: .4; cursor: not-allowed; }
+                .draft-hint { font-size: 13px; color: var(--md-on-surface-variant); margin-top: 4px; }
             </style>
             <div class="home">
                 <h1>4D Матрица Баланса</h1>
@@ -641,12 +1003,22 @@ class AppRoot extends HTMLElement {
                     ${trend ? `<div class="trend">${trend}</div>` : ''}
                 </div>
                 <div class="actions">
-                    <button class="btn-filled" id="start">🚀 Новая диагностика</button>
-                    <button class="btn-outlined" id="history" ${!hist.length?'disabled':''}>📂 Архив</button>
+                    ${hasDraft
+                        ? `<button class="btn-filled" id="continue">▶ Продолжить (шаг ${draft.currentStep} из 6)</button>
+                           <button class="btn-outlined" id="new">🚀 Новая диагностика</button>`
+                        : `<button class="btn-filled" id="new">🚀 Новая диагностика</button>`}
+                    <button class="btn-outlined" id="history" ${!hist.length ? 'disabled' : ''}>📂 Архив (${hist.length})</button>
                 </div>
             </div>
         `;
-        this.shadowRoot.querySelector('#start')?.addEventListener('click', () => window.AppState.moveStep(1));
+        this.shadowRoot.querySelector('#new')?.addEventListener('click', () => {
+            if (hasDraft && !confirm('Текущий прогресс будет потерян. Начать заново?')) return;
+            window.AppState.reset();
+            window.AppState.moveStep(1);
+        });
+        this.shadowRoot.querySelector('#continue')?.addEventListener('click', () => {
+            window.AppState.restoreDraft();
+        });
         this.shadowRoot.querySelector('#history')?.addEventListener('click', () => {
             window.AppState.currentStep = 6;
             window.dispatchEvent(new CustomEvent('state-changed'));
@@ -654,7 +1026,12 @@ class AppRoot extends HTMLElement {
     }
 
     setupNav() {
-        this.shadowRoot.querySelector('#home-btn')?.addEventListener('click', () => window.AppState.reset());
+        this.shadowRoot.querySelector('#home-btn')?.addEventListener('click', () => {
+            // Меню: сохраняем черновик и возвращаемся, не сбрасывая прогресс
+            window.AppState.saveDraft();
+            window.AppState.currentStep = 0;
+            window.dispatchEvent(new CustomEvent('state-changed'));
+        });
         this.shadowRoot.querySelector('#back-btn')?.addEventListener('click', () => window.AppState.moveStep(-1));
         this.shadowRoot.querySelector('#next-btn')?.addEventListener('click', () => {
             const step = window.AppState.currentStep;
@@ -663,7 +1040,9 @@ class AppRoot extends HTMLElement {
                 window.AppState.currentStep = 6;
                 window.dispatchEvent(new CustomEvent('state-changed'));
             } else if (step === 6) {
+                if (!confirm('Начать новую диагностику? Текущая сессия сохранена в архиве.')) return;
                 window.AppState.reset();
+                window.AppState.moveStep(1);
             } else {
                 window.AppState.moveStep(1);
             }
