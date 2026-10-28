@@ -120,6 +120,7 @@ const rankOf = (list, name) => {
 // ============================================================
 window.AppState = {
     currentStep: 0,
+    viewingArchive: false, // шаг 6 открыт из «Архива», а не после сохранения
     snapshots: {
         1: [...DEFAULT_SPHERES], 2: [...DEFAULT_SPHERES],
         3: [...DEFAULT_SPHERES], 4: [...DEFAULT_SPHERES]
@@ -162,7 +163,6 @@ window.AppState = {
         if (next < 0 || next > 6) return;
 
         // Автоподстановка следующего шага из предыдущего, если шаг ещё не трогали.
-        // Это позволяет «донести» правки назад-вперёд, не теряя ручных изменений.
         if (direction === 1 && next >= 1 && next <= 4 && !this.touched[next] &&
             this.currentStep >= 1 && this.currentStep <= 4) {
             this.snapshots[next] = [...this.snapshots[this.currentStep]];
@@ -211,7 +211,9 @@ window.AppState = {
         if (history.length > MAX_HISTORY) history.length = MAX_HISTORY;
 
         try { localStorage.setItem(STORAGE_KEYS.history, JSON.stringify(history)); } catch {}
+        // Сессия сохранена — черновик больше не нужен.
         this.clearDraft();
+        this.viewingArchive = false;
     },
 
     deleteSession(id) {
@@ -222,8 +224,11 @@ window.AppState = {
     },
 
     // ---------- Черновик ----------
+    // Черновик существует только для шагов 1..5. Шаг 6 — терминальный.
+    // Важно: если шаг вне 1..5, НЕ чистим черновик (иначе просмотр архива
+    // уничтожит незавершённую диагностику). Очистка — только в saveCurrentSession/reset.
     saveDraft() {
-        if (this.currentStep === 0) return;
+        if (this.currentStep < 1 || this.currentStep > 5) return;
         try {
             localStorage.setItem(STORAGE_KEYS.draft, JSON.stringify({
                 currentStep: this.currentStep,
@@ -234,29 +239,45 @@ window.AppState = {
             }));
         } catch {}
     },
+
     getDraft() {
         try {
             const raw = localStorage.getItem(STORAGE_KEYS.draft);
-            return raw ? JSON.parse(raw) : null;
-        } catch { return null; }
+            if (!raw) return null;
+            const d = JSON.parse(raw);
+            // Отбрасываем «зависшие» черновики шага 6 из старых версий
+            if (!d || typeof d.currentStep !== 'number' ||
+                d.currentStep < 1 || d.currentStep > 5) {
+                this.clearDraft();
+                return null;
+            }
+            return d;
+        } catch {
+            this.clearDraft();
+            return null;
+        }
     },
+
     clearDraft() {
         try { localStorage.removeItem(STORAGE_KEYS.draft); } catch {}
     },
+
     restoreDraft() {
         const draft = this.getDraft();
-        if (!draft || !draft.currentStep) return false;
+        if (!draft) return false;
         this.currentStep = draft.currentStep;
         this.snapshots = draft.snapshots;
         this.touched = draft.touched || { 1: true, 2: true, 3: true, 4: true };
         this.savedSessionId = draft.savedSessionId || null;
+        this.viewingArchive = false;
         window.dispatchEvent(new CustomEvent('state-changed'));
         return true;
     },
 
-    // ---------- Сброс ----------
+    // ---------- Сброс / завершение ----------
     reset() {
         this.currentStep = 0;
+        this.viewingArchive = false;
         this.snapshots = {
             1: [...DEFAULT_SPHERES], 2: [...DEFAULT_SPHERES],
             3: [...DEFAULT_SPHERES], 4: [...DEFAULT_SPHERES]
@@ -264,6 +285,18 @@ window.AppState = {
         this.touched = { 1: false, 2: false, 3: false, 4: false };
         this.savedSessionId = null;
         this.clearDraft();
+        window.dispatchEvent(new CustomEvent('state-changed'));
+    },
+
+    // Завершение уже сохранённой диагностики → главный экран с результатом.
+    finish() {
+        this.reset();
+    },
+
+    goHome() {
+        this.viewingArchive = false;
+        this.currentStep = 0;
+        this.saveDraft();
         window.dispatchEvent(new CustomEvent('state-changed'));
     }
 };
@@ -282,7 +315,6 @@ class BalanceList extends HTMLElement {
         this._focusAfter = null;
         this._tooltip = null;
 
-        // Привязка делегированных обработчиков
         this._onTouchStart = this._onTouchStart.bind(this);
         this._onTouchMove = this._onTouchMove.bind(this);
         this._onTouchEnd = this._onTouchEnd.bind(this);
@@ -323,7 +355,7 @@ class BalanceList extends HTMLElement {
                     border-radius: 12px; cursor: grab; user-select: none;
                     display: flex; align-items: center; gap: 8px;
                     color: var(--md-on-surface); height: 100%; box-sizing: border-box;
-                    touch-action: pan-y; /* вертикальный скролл разрешён */
+                    touch-action: pan-y;
                     transition: background .2s, box-shadow .2s;
                     outline: none;
                 }
@@ -344,7 +376,6 @@ class BalanceList extends HTMLElement {
                 .drag-handle {
                     color: var(--md-on-surface-variant); cursor: grab;
                     display: flex; align-items: center; justify-content: center;
-                    /* touch-action: none — блокируем скролл только на ручке */
                     touch-action: none;
                     padding: 4px 6px; margin-right: -6px; border-radius: 8px;
                 }
@@ -418,9 +449,7 @@ class BalanceList extends HTMLElement {
         }
     }
 
-    // ---------- Тултип (делегированный) ----------
     _onClick(e) {
-        // Подавить клик после drag
         if (this._suppressClick) {
             this._suppressClick = false;
             e.stopPropagation();
@@ -432,7 +461,6 @@ class BalanceList extends HTMLElement {
             this.showTooltip(icon);
             return;
         }
-        // Клик по чему-то другому внутри — скрыть тултип
         this.hideTooltip();
 
         const item = e.target.closest('.item');
@@ -484,7 +512,6 @@ class BalanceList extends HTMLElement {
         requestAnimationFrame(() => { this._announceEl.textContent = msg; });
     }
 
-    // ---------- Клавиатура: Alt+↑/↓ ----------
     _onKeyDown(e) {
         const item = e.target.closest('.item');
         if (!item) return;
@@ -509,7 +536,6 @@ class BalanceList extends HTMLElement {
         this.announce(`${moved} перемещён на позицию ${newIdx + 1} из ${list.length}.`);
     }
 
-    // ---------- Desktop DnD ----------
     setupDesktopDnD() {
         const wrappers = this.shadowRoot.querySelectorAll('.item-wrapper');
         let dropPosition = null;
@@ -546,7 +572,6 @@ class BalanceList extends HTMLElement {
         });
     }
 
-    // ---------- Mobile: drag только за ручку ----------
     _onTouchStart(e) {
         const handle = e.target.closest('.drag-handle');
         if (!handle) return;
@@ -578,7 +603,6 @@ class BalanceList extends HTMLElement {
         item.style.position = 'relative';
         item.classList.add('dragging');
 
-        // Найти элемент под пальцем
         item.style.pointerEvents = 'none';
         const el = this.shadowRoot.elementFromPoint(touch.clientX, touch.clientY);
         item.style.pointerEvents = '';
@@ -617,7 +641,6 @@ class BalanceList extends HTMLElement {
         this.touchDrag = null;
     }
 
-    // ---------- Перестановка ----------
     executeReorder(targetIndex, position) {
         if (this.draggedIndex === null) return;
         if (this.draggedIndex === targetIndex) {
@@ -679,7 +702,6 @@ class BalanceDashboard extends HTMLElement {
         const gins = metrics.reduce((s, m) => s + Math.abs(m.ird), 0);
         const status = window.AppState.classifyGINS(gins);
 
-        // Зоны
         const violence = metrics.filter(m => m.tN > m.tW && m.pN > m.pW);
         const sabotage = metrics.filter(m => m.ird < 0 && !violence.includes(m));
         const health = metrics.filter(m => !violence.includes(m) && !sabotage.includes(m));
@@ -796,7 +818,6 @@ class BalanceHistory extends HTMLElement {
             return;
         }
 
-        // Нормализуем выбор
         const findById = (id) => hist.find(s => s.id === id);
         let after  = findById(this.selectedAfter)  || hist[0];
         let before = findById(this.selectedBefore) || hist[1] || hist[0];
@@ -903,17 +924,51 @@ class AppRoot extends HTMLElement {
         window.removeEventListener('state-changed', this._handler);
     }
 
+    // Баннер «сессия сохранена» на шаге 6 (только для только что сохранённой)
+    renderSavedBanner() {
+        const id = window.AppState.savedSessionId;
+        if (!id) return '';
+        const session = window.AppState.getHistory().find(s => s.id === id);
+        if (!session) return '';
+        const gins = window.AppState.calculateGINS(session.snapshots);
+        const st = window.AppState.classifyGINS(gins);
+        return `
+            <div class="saved-banner ${st.cls}">
+                ✅ Диагностика сохранена
+                <small>${session.date} · ГИН ${gins} · ${st.label}</small>
+            </div>
+        `;
+    }
+
     render() {
         const step = window.AppState.currentStep;
         if (step === 0) return this.renderHome();
 
         const title = step < 5 ? window.AppState.titles[step] : (step === 5 ? 'Результаты' : 'История');
         const sub = step < 5 ? window.AppState.subtitles[step] : '';
+        const isArchiveView = step === 6 && window.AppState.viewingArchive;
+        const backDisabled = step === 1 || isArchiveView;
+
+        let nextLabel;
+        if (step === 4) nextLabel = '📊 Результат';
+        else if (step === 5) nextLabel = window.AppState.savedSessionId ? '💾 Обновить' : '💾 Сохранить';
+        else if (step === 6) nextLabel = isArchiveView ? '🏠 В меню' : '✅ Завершить';
+        else nextLabel = 'Далее →';
+
         this.shadowRoot.innerHTML = `
             <style>
                 .header { margin-bottom: 8px; }
                 .title { font-size: 1.2rem; font-weight: 500; }
                 .sub { font-size: 0.9rem; color: var(--md-on-surface-variant); margin-bottom: 8px; }
+                .saved-banner {
+                    display: flex; flex-direction: column; gap: 2px;
+                    border-radius: 16px; padding: 12px 16px; margin-bottom: 16px;
+                    font-size: 14px; font-weight: 600; line-height: 1.35;
+                }
+                .saved-banner small { font-weight: 400; font-size: 12px; opacity: .85; }
+                .saved-banner.green { background: var(--md-success-container); color: var(--md-on-success-container); }
+                .saved-banner.yellow { background: var(--md-warning-container); color: var(--md-on-warning-container); }
+                .saved-banner.red { background: var(--md-error-container); color: var(--md-on-error-container); }
                 .nav { display: flex; justify-content: space-between; margin-top: 20px; gap: 8px; flex-wrap: wrap; }
                 .nav-spacer { flex: 1 1 auto; }
                 button {
@@ -932,19 +987,18 @@ class AppRoot extends HTMLElement {
                 <div class="title">${title}</div>
                 <div class="sub">${sub}</div>
             </div>
+            ${step === 6 ? this.renderSavedBanner() : ''}
             ${step < 5 ? `<balance-list step="${step}"></balance-list>` : ''}
             ${step === 5 ? '<balance-dashboard></balance-dashboard>' : ''}
             ${step === 6 ? '<balance-history></balance-history>' : ''}
             <div class="nav">
                 <button class="btn-outlined" id="home-btn">🏠 Меню</button>
                 <span class="nav-spacer"></span>
-                <button class="btn-outlined" id="back-btn" ${step === 1 ? 'disabled' : ''}>← Назад</button>
-                <button class="btn-filled" id="next-btn">
-                    ${step === 4 ? '📊 Результат' : step === 5 ? (window.AppState.savedSessionId ? '💾 Обновить' : '💾 Сохранить') : step === 6 ? '🔄 Заново' : 'Далее →'}
-                </button>
+                <button class="btn-outlined" id="back-btn" ${backDisabled ? 'disabled' : ''}>← Назад</button>
+                <button class="btn-filled" id="next-btn">${nextLabel}</button>
             </div>
         `;
-        this.setupNav();
+        this.setupNav(isArchiveView);
     }
 
     renderHome() {
@@ -965,7 +1019,8 @@ class AppRoot extends HTMLElement {
                 else trend = '⚖️ Без изменений';
             }
         }
-        const hasDraft = draft && draft.currentStep > 0;
+        const hasDraft = !!(draft && draft.currentStep >= 1 && draft.currentStep <= 5);
+
         this.shadowRoot.innerHTML = `
             <style>
                 .home { text-align: center; }
@@ -992,7 +1047,6 @@ class AppRoot extends HTMLElement {
                 .btn-outlined { background: transparent; border: 1px solid var(--md-outline); color: var(--md-primary); }
                 .btn-outlined:hover:not(:disabled) { background: rgba(103,80,164,0.06); }
                 .btn-outlined:disabled { opacity: .4; cursor: not-allowed; }
-                .draft-hint { font-size: 13px; color: var(--md-on-surface-variant); margin-top: 4px; }
             </style>
             <div class="home">
                 <h1>4D Матрица Баланса</h1>
@@ -1011,41 +1065,66 @@ class AppRoot extends HTMLElement {
                 </div>
             </div>
         `;
+
         this.shadowRoot.querySelector('#new')?.addEventListener('click', () => {
             if (hasDraft && !confirm('Текущий прогресс будет потерян. Начать заново?')) return;
             window.AppState.reset();
             window.AppState.moveStep(1);
         });
+
         this.shadowRoot.querySelector('#continue')?.addEventListener('click', () => {
             window.AppState.restoreDraft();
         });
+
         this.shadowRoot.querySelector('#history')?.addEventListener('click', () => {
+            window.AppState.viewingArchive = true;
             window.AppState.currentStep = 6;
             window.dispatchEvent(new CustomEvent('state-changed'));
         });
     }
 
-    setupNav() {
+    setupNav(isArchiveView) {
         this.shadowRoot.querySelector('#home-btn')?.addEventListener('click', () => {
-            // Меню: сохраняем черновик и возвращаемся, не сбрасывая прогресс
-            window.AppState.saveDraft();
+            // На шагах 1..5 — сохранить черновик. На шаге 6 — просто в меню,
+            // не трогая существующий черновик (если он есть).
+            if (window.AppState.currentStep >= 1 && window.AppState.currentStep <= 5) {
+                window.AppState.saveDraft();
+            }
+            window.AppState.viewingArchive = false;
             window.AppState.currentStep = 0;
             window.dispatchEvent(new CustomEvent('state-changed'));
         });
-        this.shadowRoot.querySelector('#back-btn')?.addEventListener('click', () => window.AppState.moveStep(-1));
+
+        this.shadowRoot.querySelector('#back-btn')?.addEventListener('click', () => {
+            window.AppState.moveStep(-1);
+        });
+
         this.shadowRoot.querySelector('#next-btn')?.addEventListener('click', () => {
             const step = window.AppState.currentStep;
+
             if (step === 5) {
+                // Сохраняем и переходим к экрану «готово»
                 window.AppState.saveCurrentSession();
                 window.AppState.currentStep = 6;
+                window.AppState.viewingArchive = false;
                 window.dispatchEvent(new CustomEvent('state-changed'));
-            } else if (step === 6) {
-                if (!confirm('Начать новую диагностику? Текущая сессия сохранена в архиве.')) return;
-                window.AppState.reset();
-                window.AppState.moveStep(1);
-            } else {
-                window.AppState.moveStep(1);
+                return;
             }
+
+            if (step === 6) {
+                if (isArchiveView) {
+                    // Просмотр архива → просто в меню
+                    window.AppState.viewingArchive = false;
+                    window.AppState.currentStep = 0;
+                    window.dispatchEvent(new CustomEvent('state-changed'));
+                } else {
+                    // Только что сохранённая сессия → завершаем и возвращаемся к результату
+                    window.AppState.finish();
+                }
+                return;
+            }
+
+            window.AppState.moveStep(1);
         });
     }
 }
